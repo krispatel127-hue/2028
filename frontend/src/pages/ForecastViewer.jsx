@@ -710,6 +710,38 @@ const summarizeHistoryRows = (rows = []) => {
   };
 };
 
+const getAnalysisProducts = (analysisPayload = {}) => {
+  const sources = [
+    analysisPayload?.products,
+    analysisPayload?.products_analysis,
+    analysisPayload?.inventory_products,
+    analysisPayload?.inventory_summary?.products,
+    analysisPayload?.summary?.products,
+  ];
+
+  for (const source of sources) {
+    if (Array.isArray(source) && source.length > 0) {
+      return source;
+    }
+  }
+
+  return [];
+};
+
+const sumCurrentStockFromProducts = (products = []) => products.reduce((sum, product) => {
+  const stockValue = toSafeNumber(
+    product?.current_stock
+    ?? product?.on_hand
+    ?? product?.stock
+    ?? product?.inventory
+    ?? product?.quantity_on_hand
+    ?? product?.qty_on_hand
+    ?? product?.available_stock
+    ?? product?.closing_stock
+  );
+  return sum + (Number.isFinite(stockValue) ? stockValue : 0);
+}, 0);
+
 const DAY_TIMELINE_TIMESTAMP_ALIASES = [
   'timestamp', 'datetime', 'date_time', 'transaction_datetime', 'invoice_datetime', 'created_at', 'updated_at',
 ];
@@ -1392,7 +1424,17 @@ const ForecastViewer = () => {
     () => summarizeHistoryRows(filteredHistoryRows),
     [filteredHistoryRows]
   );
-  const globalHistorySummary = useMemo(() => summarizeHistoryRows(historyRows), [historyRows]);
+
+  const globalRowsForCards = useMemo(() => {
+    if (historyRows.length > 0) return historyRows;
+    if (tableRowsToRender.length > 0) return tableRowsToRender;
+    return [];
+  }, [historyRows, tableRowsToRender]);
+
+  const globalHistorySummary = useMemo(
+    () => summarizeHistoryRows(globalRowsForCards),
+    [globalRowsForCards]
+  );
 
   const forecastStats = useMemo(() => {
     const historical = displayPastData.filter(r => r.actual != null);
@@ -1409,9 +1451,11 @@ const ForecastViewer = () => {
     return { latestSales, avgForecast, peakForecast };
   }, [displayPastData, displayForecastData]);
 
+  const customerRowsSource = filteredHistoryRows.length > 0 ? filteredHistoryRows : fallbackTableRows;
+
   const topHistoryCustomers = useMemo(() => {
     const byCustomer = new Map();
-    filteredHistoryRows.forEach((row) => {
+    customerRowsSource.forEach((row) => {
       const key = row.customerId || row.customerName;
       if (!key) return;
       if (!byCustomer.has(key)) {
@@ -1434,9 +1478,46 @@ const ForecastViewer = () => {
     });
 
     return Array.from(byCustomer.values())
+      .filter((entry) => Number(entry.totalAmount || 0) > 0 || Number(entry.quantity || 0) > 0)
       .sort((a, b) => (b.totalAmount - a.totalAmount) || (b.quantity - a.quantity))
       .slice(0, 5);
-  }, [filteredHistoryRows]);
+  }, [customerRowsSource]);
+
+  const analysisProducts = useMemo(
+    () => getAnalysisProducts(analysisPayload || {}),
+    [analysisPayload]
+  );
+
+  const currentStockTotal = useMemo(() => {
+    const fromForecastProducts = sumCurrentStockFromProducts(forecasts || []);
+    if (fromForecastProducts > 0) return fromForecastProducts;
+
+    const fromAnalysisProducts = sumCurrentStockFromProducts(analysisProducts || []);
+    if (fromAnalysisProducts > 0) return fromAnalysisProducts;
+
+    const summaryStock = toSafeNumber(
+      analysisPayload?.inventory_summary?.total_current_stock
+      ?? analysisPayload?.inventory_summary?.current_stock
+      ?? analysisPayload?.summary?.total_current_stock
+      ?? analysisPayload?.summary?.current_stock
+      ?? analysisPayload?.summary?.total_stock
+    );
+    return Number.isFinite(summaryStock) ? summaryStock : 0;
+  }, [forecasts, analysisProducts, analysisPayload]);
+
+  const customerCountForCards = useMemo(() => {
+    if (globalHistorySummary.customerCount > 0) return globalHistorySummary.customerCount;
+
+    const customersFromAnalysis = Array.isArray(analysisPayload?.customers) ? analysisPayload.customers.length : 0;
+    if (customersFromAnalysis > 0) return customersFromAnalysis;
+
+    return topHistoryCustomers.length;
+  }, [globalHistorySummary.customerCount, analysisPayload, topHistoryCustomers]);
+
+  const stockCountForCards = useMemo(() => {
+    if (globalHistorySummary.stockCount > 0) return globalHistorySummary.stockCount;
+    return analysisProducts.length;
+  }, [globalHistorySummary.stockCount, analysisProducts]);
 
   const selectionLabel = useMemo(() => {
     if (timeGranularity === 'day') return selectedDay;
@@ -1630,15 +1711,15 @@ const ForecastViewer = () => {
         {[
           {
             label: 'Customers',
-            value: globalHistorySummary.customerCount,
-            hint: `Across ${globalHistorySummary.stockCount} items`,
+            value: customerCountForCards,
+            hint: `Across ${stockCountForCards} items`,
             icon: Users,
             tone: 'from-sky-500 to-blue-600',
           },
           {
             label: 'Total Sales',
             value: formatUnits(globalHistorySummary.quantity),
-            hint: `From ${historyRows.length} orders`,
+            hint: `From ${globalRowsForCards.length} orders`,
             icon: Box,
             tone: 'from-violet-500 to-purple-600',
           },
@@ -1651,7 +1732,7 @@ const ForecastViewer = () => {
           },
           {
             label: 'Current Stock',
-            value: formatUnits(forecasts.reduce((sum, p) => sum + (p.current_stock || p.stock || 0), 0)),
+            value: formatUnits(currentStockTotal),
             hint: 'Units in hand',
             icon: ShieldCheck,
             tone: 'from-blue-600 to-indigo-700',
@@ -2168,164 +2249,6 @@ const ForecastViewer = () => {
           </div>
         </div>
 
-        {/* ── Product Cards Grid ── */}
-        <div className="border-t border-slate-100 bg-gradient-to-b from-white to-slate-50/60 px-6 py-6">
-
-          {timeGranularity === 'day' && (
-            <div className="mt-5 grid grid-cols-1 gap-8">
-              <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <p className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">Daily Operations</p>
-                    <h4 className="mt-2 text-lg font-black text-slate-900">Time-wise sales and stock movement</h4>
-                  </div>
-                  <div className="rounded-2xl bg-slate-50 px-3 py-2 text-right">
-                    <p className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-400">Selected day</p>
-                    <p className="mt-1 text-sm font-bold text-slate-800">{formatFriendlyDate(selectedDay)}</p>
-                  </div>
-                </div>
-
-                <div className="mt-4 grid grid-cols-2 gap-3">
-                  <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
-                    <p className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-400">Total sold</p>
-                    <p className="mt-1 text-xl font-black text-slate-900">{formatUnits(dayTimelineSummary.quantity)} units</p>
-                  </div>
-                  <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
-                    <p className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-400">Sales value</p>
-                    <p className="mt-1 text-xl font-black text-slate-900">{formatCompactCurrency(dayTimelineSummary.amount)}</p>
-                  </div>
-                  <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
-                    <p className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-400">Active hours</p>
-                    <p className="mt-1 text-xl font-black text-slate-900">{dayTimelineSummary.activeHours}</p>
-                  </div>
-                  <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
-                    <p className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-400">Latest stock left</p>
-                    <p className="mt-1 text-xl font-black text-slate-900">
-                      {dayTimelineSummary.latestStockLeft != null ? `${formatUnits(dayTimelineSummary.latestStockLeft)} units` : 'Not available'}
-                    </p>
-                  </div>
-                </div>
-
-                <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50/80 p-4">
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <p className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">Intraday Summary</p>
-                      <p className="mt-1 text-sm font-semibold text-slate-700">Har hour ka sale aur stock snapshot</p>
-                    </div>
-                    <div className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-[11px] font-semibold text-slate-600">
-                      <Clock size={13} className="text-sky-500" />
-                      {hourlySalesBuckets.length} hourly blocks
-                    </div>
-                  </div>
-
-                  <div className="mt-4 space-y-3">
-                    {hourlySalesBuckets.length === 0 ? (
-                      <div className="rounded-2xl border border-dashed border-slate-200 bg-white px-4 py-8 text-center">
-                        <p className="text-sm font-semibold text-slate-500">Selected day ke liye time-stamped sales rows nahi mile.</p>
-                        <p className="mt-2 text-[12px] text-slate-400">Agar upload me `timestamp`, `created_at`, `time`, `transaction_time` ya datetime column hoga to yeh automatically fill hoga.</p>
-                      </div>
-                    ) : (
-                      hourlySalesBuckets.map((bucket) => {
-                        const maxQty = Math.max(...hourlySalesBuckets.map((item) => Number(item.quantity || 0)), 1);
-                        const width = `${Math.max(8, Math.round((Number(bucket.quantity || 0) / maxQty) * 100))}%`;
-                        return (
-                          <div key={bucket.hourKey} className="rounded-2xl border border-white bg-white px-4 py-3 shadow-sm">
-                            <div className="flex flex-wrap items-center justify-between gap-3">
-                              <div className="min-w-0">
-                                <p className="text-[12px] font-black uppercase tracking-[0.12em] text-slate-900">{bucket.hourKey}</p>
-                                <p className="mt-1 text-[11px] font-semibold text-slate-500">
-                                  {bucket.orderCount} rows • {bucket.itemCount} items
-                                </p>
-                              </div>
-                              <div className="text-right">
-                                <p className="text-sm font-black text-slate-900">{formatUnits(bucket.quantity)} units</p>
-                                <p className="mt-1 text-[11px] font-semibold text-slate-500">{formatCompactCurrency(bucket.amount)}</p>
-                              </div>
-                            </div>
-
-                            <div className="mt-3 h-2 rounded-full bg-slate-100">
-                              <div className="h-2 rounded-full bg-gradient-to-r from-sky-500 via-emerald-500 to-violet-500" style={{ width }} />
-                            </div>
-
-                            <div className="mt-3 flex items-center justify-between gap-3 text-[11px] font-semibold">
-                              <span className="text-slate-500">Stock left</span>
-                              <span className="text-slate-800">
-                                {bucket.stockLeft != null ? `${formatUnits(bucket.stockLeft)} units` : 'No snapshot'}
-                              </span>
-                            </div>
-                          </div>
-                        );
-                      })
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              <div className="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-sm">
-                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-slate-50/80 px-5 py-4">
-                  <div>
-                    <p className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">Intraday Ledger</p>
-                    <h4 className="mt-1 text-lg font-black text-slate-900">Exact time, item sold, customer, and stock left</h4>
-                  </div>
-                  <div className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-[11px] font-semibold text-slate-600">
-                    <Clock size={14} className="text-sky-500" />
-                    Day timeline view
-                  </div>
-                </div>
-
-                <div className="overflow-x-auto">
-                  <table className="w-full min-w-full border-separate border-spacing-0">
-                    <thead className="bg-slate-50/80">
-                      <tr>
-                        {['Time', 'Stock', 'Customer', 'Sold Qty', 'Sale Value', 'Stock Left'].map((label) => {
-                          const isNumeric = ['Sold Qty', 'Sale Value', 'Stock Left'].includes(label);
-                          return (
-                            <th
-                              key={label}
-                              className={`px-6 py-4 text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500 whitespace-nowrap border-r border-b border-slate-200/60 last:border-r-0 ${isNumeric ? 'text-right' : 'text-left'}`}
-                            >
-                              {label}
-                            </th>
-                          );
-                        })}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {dayTimelineRows.length === 0 ? (
-                        <tr>
-                          <td colSpan={7} className="px-4 py-12 text-center">
-                            <div className="mx-auto max-w-md">
-                              <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full border border-sky-200 bg-sky-50 text-sky-600">
-                                <Clock size={24} />
-                              </div>
-                              <p className="mt-4 text-base font-black text-slate-900">No time-wise day rows found</p>
-                              <p className="mt-2 text-sm text-slate-500">
-                                Selected day ke liye time-stamped transactional data nahi mila. Date ke saath time/timestamp column hoga to yahan full intraday flow dikhega.
-                              </p>
-                            </div>
-                          </td>
-                        </tr>
-                      ) : (
-                        dayTimelineRows.map((row) => (
-                          <tr key={row.id} className="hover:bg-slate-50/80 transition-colors">
-                            <td className="px-6 py-5 text-sm font-bold text-slate-900 border-r border-b border-slate-100 last:border-r-0">{row.timeLabel}</td>
-                            <td className="px-6 py-5 text-sm font-medium text-slate-700 border-r border-b border-slate-100 last:border-r-0">{row.stockName}</td>
-                            <td className="px-6 py-5 text-sm font-medium text-slate-600 border-r border-b border-slate-100 last:border-r-0">{row.customerName}</td>
-                            <td className="px-6 py-5 text-right text-sm font-bold text-slate-900 tabular-nums border-r border-b border-slate-100 last:border-r-0">{formatUnits(row.quantity)} units</td>
-                            <td className="px-6 py-5 text-right text-sm font-bold text-emerald-600 tabular-nums border-r border-b border-slate-100 last:border-r-0">{formatCurrency(row.amount || 0)}</td>
-                            <td className="px-6 py-5 text-right text-sm font-bold text-slate-900 tabular-nums border-b border-slate-100 last:border-r-0">
-                              {row.stockLeft != null ? `${formatUnits(row.stockLeft)} units` : <span className="text-slate-300">--</span>}
-                            </td>
-                          </tr>
-                        ))
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
       </GlassCard>
       {/* â”€â”€ Trends Modal â”€â”€ */}
       <AnimatePresence>
