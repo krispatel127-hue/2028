@@ -60,13 +60,19 @@ const normalizeActualRows = (rows = []) =>
   rows.map((d) => ({ period: d.date || d.period || d.name, actual: Number(d.actual ?? d.value ?? d.sales ?? 0) }))
     .filter((row) => row.period);
 
-const normalizeForecastRows = (rows = []) =>
+const normalizeForecastRows = (rows = [], { requireCalendarDate = false, skipSynthetic = false } = {}) =>
   rows.map((d) => ({
     period: d.date || d.period || d.name || 'Data not available',
     predicted: Math.round(Number(d.predicted ?? d.predicted_demand ?? d.value ?? 0)),
     lower: d.lower_bound != null ? Number(d.lower_bound) : Number(d.lower ?? 0),
     upper: d.upper_bound != null ? Number(d.upper_bound) : Number(d.upper ?? 0),
-  })).filter((row) => row.period);
+    _synthetic: Boolean(d?._synthetic),
+  })).filter((row) => {
+    if (!row.period) return false;
+    if (skipSynthetic && row._synthetic) return false;
+    if (requireCalendarDate && !parseLooseDate(row.period)) return false;
+    return true;
+  });
 
 const toFiniteNum = (value, fallback = 0) => {
   const num = Number(value);
@@ -75,8 +81,11 @@ const toFiniteNum = (value, fallback = 0) => {
 
 const toIsoDay = (date) => {
   const d = new Date(date);
-  d.setHours(0, 0, 0, 0);
-  return d.toISOString().slice(0, 10);
+  if (Number.isNaN(d.getTime())) return '';
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 };
 
 const MONTH_LABEL_FORMATTER = new Intl.DateTimeFormat('en-US', {
@@ -269,17 +278,28 @@ const getPreviousPeriodSelection = (granularity, selectedDay, selectedMonth, sel
 const sumField = (rows = [], field) => rows.reduce((sum, row) => sum + Number(row?.[field] || 0), 0);
 
 const buildForecastSeriesFromAnalysis = (analysisPayload = {}, pastRows = []) => {
-  const normalizedDemand = normalizeForecastRows(analysisPayload?.demand_forecast || []);
-  if (normalizedDemand.length > 0) return normalizedDemand;
+  const normalizedDemand = normalizeForecastRows(analysisPayload?.demand_forecast || [], {
+    requireCalendarDate: true,
+    skipSynthetic: Boolean(analysisPayload?.demand_forecast_is_synthetic),
+  });
 
   const next365Days = Array.isArray(analysisPayload?.forecast?.next_365_days)
     ? analysisPayload.forecast.next_365_days
     : [];
 
+  let horizonRows = [];
   if (next365Days.length > 0) {
-    const start = new Date();
+    const sortedPastDates = (Array.isArray(pastRows) ? pastRows : [])
+      .map((row) => parseLooseDate(row?.period || row?.date || row?.name))
+      .filter(Boolean)
+      .sort((a, b) => a.getTime() - b.getTime());
+    const lastPastDate = sortedPastDates.length ? sortedPastDates[sortedPastDates.length - 1] : null;
+    const start = lastPastDate ? new Date(lastPastDate) : new Date();
+    if (lastPastDate) {
+      start.setDate(start.getDate() + 1);
+    }
     start.setHours(0, 0, 0, 0);
-    return next365Days.map((value, idx) => {
+    horizonRows = next365Days.map((value, idx) => {
       const date = new Date(start);
       date.setDate(start.getDate() + idx);
       const predicted = Math.max(0, Math.round(toFiniteNum(value, 0)));
@@ -292,11 +312,36 @@ const buildForecastSeriesFromAnalysis = (analysisPayload = {}, pastRows = []) =>
     });
   }
 
-  return [];
+  // Prefer explicit demand_forecast values where available, but extend horizon
+  // using next_365_days so future year filters can show all projected years.
+  const merged = new Map();
+  [...horizonRows, ...normalizedDemand].forEach((row) => {
+    const period = String(row?.period || '');
+    if (!period) return;
+    const existing = merged.get(period) || {};
+    merged.set(period, {
+      ...existing,
+      ...row,
+      period,
+      predicted: row?.predicted ?? existing?.predicted ?? 0,
+      lower: row?.lower ?? existing?.lower ?? 0,
+      upper: row?.upper ?? existing?.upper ?? 0,
+    });
+  });
+
+  return Array.from(merged.values())
+    .filter((row) => parseLooseDate(row?.period))
+    .sort((a, b) => {
+      const da = parseLooseDate(a?.period)?.getTime() || 0;
+      const db = parseLooseDate(b?.period)?.getTime() || 0;
+      return da - db;
+    });
 };
 
 const buildForecastProductsFromAnalysis = (analysisPayload) => {
-  const rows = Array.isArray(analysisPayload?.demand_forecast) ? analysisPayload.demand_forecast : [];
+  const rows = Array.isArray(analysisPayload?.demand_forecast)
+    ? analysisPayload.demand_forecast.filter((row) => !row?._synthetic)
+    : [];
   const products = Array.isArray(analysisPayload?.products) ? analysisPayload.products : [];
   const metaBySku = new Map(
     products.map((p) => [String(p.sku || p.product || p.name || '').toUpperCase(), p])
@@ -837,12 +882,15 @@ const hasUsableForecastPayload = (payload) => {
   const analysisPayload = extractAnalysisPayload(payload);
   if (!analysisPayload || typeof analysisPayload !== 'object') return false;
 
+  const normalizedPastDaily = normalizeActualRows(analysisPayload?.past_sales_daily || analysisPayload?.past_sales || []);
+  const derivedPastDaily = derivePastSalesFromPreviewRows(collectHistorySourceRows(analysisPayload));
+  const effectivePastDaily = normalizedPastDaily.length ? normalizedPastDaily : derivedPastDaily;
+  const derivedForecastRows = buildForecastSeriesFromAnalysis(analysisPayload, effectivePastDaily);
+
   return Boolean(
-    (Array.isArray(analysisPayload?.demand_forecast) && analysisPayload.demand_forecast.length)
-    || (Array.isArray(analysisPayload?.past_sales_daily) && analysisPayload.past_sales_daily.length)
+    effectivePastDaily.length
     || (Array.isArray(analysisPayload?.past_sales_weekly) && analysisPayload.past_sales_weekly.length)
-    || (Array.isArray(analysisPayload?.past_sales) && analysisPayload.past_sales.length)
-    || (Array.isArray(analysisPayload?.forecast?.next_365_days) && analysisPayload.forecast.next_365_days.length)
+    || derivedForecastRows.length
   );
 };
 
@@ -855,6 +903,13 @@ const ForecastViewer = () => {
   const [pastWeeklyData, setPastWeeklyData] = useState([]);
   const [forecastRawData, setForecastRawData] = useState([]);
   const [historySourcePayload, setHistorySourcePayload] = useState(null);
+  const [forecastQuality, setForecastQuality] = useState({
+    signalReady: true,
+    source: 'unknown',
+    qualityScore: 0,
+    dateCoverage: 0,
+    signalRatio: 0,
+  });
   const [loading, setLoading] = useState(true);
   const [forecastMode, setForecastMode] = useState('future');
   const [timeGranularity, setTimeGranularity] = useState('month');
@@ -874,12 +929,24 @@ const ForecastViewer = () => {
   const analysisPayload = useMemo(() => extractAnalysisPayload(liveAnalysis), [liveAnalysis]);
 
   const applyAnalysisPayload = (analysisPayload, sourcePayload = null) => {
+    const effectiveSourcePayload = sourcePayload || analysisPayload || {};
     const normalizedPastDaily = normalizeActualRows(analysisPayload?.past_sales_daily || analysisPayload?.past_sales || []);
-    setPastDailyData(normalizedPastDaily);
+    const derivedPastDaily = derivePastSalesFromPreviewRows(collectHistorySourceRows(effectiveSourcePayload));
+    const finalPastDaily = normalizedPastDaily.length ? normalizedPastDaily : derivedPastDaily;
+
+    setPastDailyData(finalPastDaily);
     setPastWeeklyData(normalizeActualRows(analysisPayload?.past_sales_weekly || []));
-    setForecastRawData(buildForecastSeriesFromAnalysis(analysisPayload, normalizedPastDaily));
+    setForecastRawData(buildForecastSeriesFromAnalysis(analysisPayload, finalPastDaily));
     setForecasts(buildForecastProductsFromAnalysis(analysisPayload));
-    setHistorySourcePayload(sourcePayload || analysisPayload || null);
+    setHistorySourcePayload(effectiveSourcePayload);
+    const quality = analysisPayload?.metadata?.forecast_quality || {};
+    setForecastQuality({
+      signalReady: Boolean(analysisPayload?.metadata?.forecast_signal_ready ?? true),
+      source: String(analysisPayload?.demand_forecast_source || 'unknown'),
+      qualityScore: Number(quality?.quality_score || 0),
+      dateCoverage: Number(quality?.date_coverage_ratio || 0),
+      signalRatio: Number(quality?.sales_signal_ratio || 0),
+    });
     setAuditData({
       aggregate_accuracy: Number(analysisPayload?.confidence_score || 0),
       stability: analysisPayload?.confidence_label || analysisPayload?.metadata?.confidence || 'Data not available',
@@ -896,18 +963,37 @@ const ForecastViewer = () => {
     setLoading(false);
   }, [analysisPayload]);
 
+  const historyRows = useMemo(
+    () => buildHistoryRowsFromAnalysis(historySourcePayload || analysisPayload || {}),
+    [historySourcePayload, analysisPayload]
+  );
+
+  const basePastRows = useMemo(
+    () => (pastDailyData.length ? pastDailyData : pastWeeklyData),
+    [pastDailyData, pastWeeklyData]
+  );
+
+  const pastFilterRows = useMemo(() => {
+    const historyAsRows = historyRows.map((row) => ({ period: row?.effectiveDate }));
+    return [...basePastRows, ...historyAsRows];
+  }, [basePastRows, historyRows]);
+
   const availableYears = useMemo(() => {
     const years = new Set();
-    [...pastDailyData, ...pastWeeklyData, ...forecastRawData].forEach((row) => {
+    const activeRows = forecastMode === 'past'
+      ? pastFilterRows
+      : (forecastMode === 'future' ? forecastRawData : [...pastFilterRows, ...forecastRawData]);
+
+    activeRows.forEach((row) => {
       const date = getRowDate(row);
       if (date) years.add(date.getFullYear());
     });
+
     if (!years.size) {
-      const thisYear = new Date().getFullYear();
-      return [thisYear - 1, thisYear, thisYear + 1];
+      return [new Date().getFullYear()];
     }
     return Array.from(years).sort((a, b) => b - a);
-  }, [pastDailyData, pastWeeklyData, forecastRawData]);
+  }, [forecastMode, pastFilterRows, forecastRawData]);
 
   const availableTrendYears = useMemo(() => {
     const years = new Set();
@@ -916,8 +1002,7 @@ const ForecastViewer = () => {
       if (date) years.add(date.getFullYear());
     });
     if (!years.size) {
-      const thisYear = new Date().getFullYear();
-      return [thisYear - 1, thisYear, thisYear + 1];
+      return [new Date().getFullYear()];
     }
     return Array.from(years).sort((a, b) => b - a);
   }, [pastDailyData]);
@@ -980,11 +1065,6 @@ const ForecastViewer = () => {
     [trendSalesRows]
   );
 
-  const historyRows = useMemo(
-    () => buildHistoryRowsFromAnalysis(historySourcePayload || analysisPayload || {}),
-    [historySourcePayload, analysisPayload]
-  );
-
   const productSpecificHistory = useMemo(() => {
     if (!selectedHistoryProduct) return [];
     const normalizedSelected = String(selectedHistoryProduct).toLowerCase();
@@ -1042,6 +1122,42 @@ const ForecastViewer = () => {
     return filteredRows;
   }, [pastDailyData, pastWeeklyData, timeGranularity, selectedDay, selectedMonth, selectedYear, hourlySalesBuckets]);
 
+  const combinedWindowRows = useMemo(() => {
+    const rowsMap = new Map();
+
+    displayPastData.forEach((row) => {
+      const key = String(row?.period || '');
+      if (!key) return;
+      rowsMap.set(key, {
+        period: key,
+        actual: Number(row?.actual || 0),
+        predicted: null,
+        lower: null,
+        upper: null,
+      });
+    });
+
+    displayForecastData.forEach((row) => {
+      const key = String(row?.period || '');
+      if (!key) return;
+      const existing = rowsMap.get(key) || {
+        period: key,
+        actual: null,
+        predicted: null,
+        lower: null,
+        upper: null,
+      };
+      rowsMap.set(key, {
+        ...existing,
+        predicted: Number(row?.predicted || 0),
+        lower: row?.lower != null ? Number(row.lower) : null,
+        upper: row?.upper != null ? Number(row.upper) : null,
+      });
+    });
+
+    return Array.from(rowsMap.values());
+  }, [displayPastData, displayForecastData]);
+
   const comparisonMetrics = useMemo(() => {
     const sourcePast = pastDailyData.length ? pastDailyData : pastWeeklyData;
     const previousPast = filterRowsByGranularity(
@@ -1093,27 +1209,31 @@ const ForecastViewer = () => {
 
   const availableMonths = useMemo(() => {
     const months = new Set();
-    [...pastDailyData, ...forecastRawData].forEach((row) => {
+    const activeRows = forecastMode === 'past'
+      ? pastFilterRows
+      : (forecastMode === 'future' ? forecastRawData : [...pastFilterRows, ...forecastRawData]);
+
+    activeRows.forEach((row) => {
       const date = getRowDate(row);
       if (date) months.add(toInputMonth(date));
     });
-    historyRows.forEach((row) => {
-      if (row?.effectiveDate) months.add(toInputMonth(row.effectiveDate));
-    });
+
     return Array.from(months).sort().reverse();
-  }, [pastDailyData, forecastRawData, historyRows]);
+  }, [forecastMode, pastFilterRows, forecastRawData]);
 
   const availableDays = useMemo(() => {
     const days = new Set();
-    [...pastDailyData, ...forecastRawData].forEach((row) => {
+    const activeRows = forecastMode === 'past'
+      ? pastFilterRows
+      : (forecastMode === 'future' ? forecastRawData : [...pastFilterRows, ...forecastRawData]);
+
+    activeRows.forEach((row) => {
       const date = getRowDate(row);
       if (date) days.add(toIsoDay(date));
     });
-    historyRows.forEach((row) => {
-      if (row?.effectiveDate) days.add(toIsoDay(row.effectiveDate));
-    });
+
     return Array.from(days).sort().reverse();
-  }, [pastDailyData, forecastRawData, historyRows]);
+  }, [forecastMode, pastFilterRows, forecastRawData]);
 
   useEffect(() => {
     if (!availableMonths.length) return;
@@ -1151,6 +1271,122 @@ const ForecastViewer = () => {
       return matchText.includes(query);
     });
   }, [historyRows, timeGranularity, selectedDay, selectedMonth, selectedYear, historySearchTerm]);
+
+  const fallbackTableRows = useMemo(() => {
+    if (filteredHistoryRows.length > 0) return [];
+
+    const rowsMap = new Map();
+    displayPastData.forEach((row) => {
+      const key = String(row?.period || '');
+      if (!key) return;
+      rowsMap.set(key, {
+        period: key,
+        actual: Number(row?.actual || 0),
+        predicted: 0,
+      });
+    });
+    displayForecastData.forEach((row) => {
+      const key = String(row?.period || '');
+      if (!key) return;
+      const existing = rowsMap.get(key) || { period: key, actual: 0, predicted: 0 };
+      rowsMap.set(key, {
+        ...existing,
+        predicted: Number(row?.predicted || 0),
+      });
+    });
+
+    const rows = Array.from(rowsMap.values())
+      .filter((row) => {
+        const actual = Number(row?.actual || 0);
+        const predicted = Number(row?.predicted || 0);
+        return actual > 0 || predicted > 0;
+      })
+      .map((row, index) => {
+        const actual = Number(row?.actual || 0);
+        const predicted = Number(row?.predicted || 0);
+        const quantity = forecastMode === 'past'
+          ? actual
+          : (forecastMode === 'future' ? predicted : actual + predicted);
+
+        const paidAmount = forecastMode === 'future' ? 0 : actual;
+        const pendingAmount = forecastMode === 'past' ? 0 : predicted;
+        const paymentStatus = forecastMode === 'future'
+          ? 'Projected'
+          : (forecastMode === 'combined' ? 'Mixed' : 'Paid');
+
+        return {
+          id: `agg-${index}-${row.period}`,
+          customerName: `System Aggregate (${row.period})`,
+          customerId: '',
+          stockName: forecastMode === 'future' ? 'Forecast View' : 'Sales + Forecast View',
+          quantity,
+          totalAmount: quantity,
+          paidAmount,
+          pendingAmount,
+          paymentStatus,
+          orderDate: row.period,
+          deliveryDate: '',
+          orderId: '',
+        };
+      });
+
+    return rows;
+  }, [filteredHistoryRows.length, displayPastData, displayForecastData, forecastMode]);
+
+  const tableRowsToRender = filteredHistoryRows.length > 0 ? filteredHistoryRows : fallbackTableRows;
+
+  const availableHistoryDays = useMemo(() => {
+    const days = new Set();
+    historyRows.forEach((row) => {
+      if (row?.effectiveDate) days.add(toIsoDay(row.effectiveDate));
+    });
+    return Array.from(days).sort().reverse();
+  }, [historyRows]);
+
+  const availableHistoryMonths = useMemo(() => {
+    const months = new Set();
+    historyRows.forEach((row) => {
+      if (row?.effectiveDate) months.add(toInputMonth(row.effectiveDate));
+    });
+    return Array.from(months).sort().reverse();
+  }, [historyRows]);
+
+  const availableHistoryYears = useMemo(() => {
+    const years = new Set();
+    historyRows.forEach((row) => {
+      if (row?.effectiveDate) years.add(String(row.effectiveDate.getFullYear()));
+    });
+    return Array.from(years).sort().reverse();
+  }, [historyRows]);
+
+  useEffect(() => {
+    if (forecastViewMode !== 'table') return;
+    if (cleanTextValue(historySearchTerm)) return;
+    if (filteredHistoryRows.length > 0) return;
+
+    if (timeGranularity === 'day' && availableHistoryDays.length && selectedDay !== availableHistoryDays[0]) {
+      setSelectedDay(availableHistoryDays[0]);
+      return;
+    }
+    if (timeGranularity === 'month' && availableHistoryMonths.length && selectedMonth !== availableHistoryMonths[0]) {
+      setSelectedMonth(availableHistoryMonths[0]);
+      return;
+    }
+    if (timeGranularity === 'year' && availableHistoryYears.length && selectedYear !== availableHistoryYears[0]) {
+      setSelectedYear(availableHistoryYears[0]);
+    }
+  }, [
+    forecastViewMode,
+    historySearchTerm,
+    filteredHistoryRows.length,
+    timeGranularity,
+    availableHistoryDays,
+    availableHistoryMonths,
+    availableHistoryYears,
+    selectedDay,
+    selectedMonth,
+    selectedYear,
+  ]);
 
   const historySummary = useMemo(
     () => summarizeHistoryRows(filteredHistoryRows),
@@ -1207,42 +1443,6 @@ const ForecastViewer = () => {
     if (timeGranularity === 'month') return selectedMonth;
     return selectedYear;
   }, [timeGranularity, selectedDay, selectedMonth, selectedYear]);
-
-  const combinedWindowRows = useMemo(() => {
-    const rowsMap = new Map();
-
-    displayPastData.forEach((row) => {
-      const key = String(row?.period || '');
-      if (!key) return;
-      rowsMap.set(key, {
-        period: key,
-        actual: Number(row?.actual || 0),
-        predicted: null,
-        lower: null,
-        upper: null,
-      });
-    });
-
-    displayForecastData.forEach((row) => {
-      const key = String(row?.period || '');
-      if (!key) return;
-      const existing = rowsMap.get(key) || {
-        period: key,
-        actual: null,
-        predicted: null,
-        lower: null,
-        upper: null,
-      };
-      rowsMap.set(key, {
-        ...existing,
-        predicted: Number(row?.predicted || 0),
-        lower: row?.lower != null ? Number(row.lower) : null,
-        upper: row?.upper != null ? Number(row.upper) : null,
-      });
-    });
-
-    return Array.from(rowsMap.values());
-  }, [displayPastData, displayForecastData]);
 
   const exportSelectedWindowCsv = () => {
     const rowsMap = new Map();
@@ -1398,6 +1598,13 @@ const ForecastViewer = () => {
       setForecastRawData([]);
       setForecasts([]);
       setHistorySourcePayload(sourcePayload || liveAnalysis || null);
+      setForecastQuality({
+        signalReady: false,
+        source: 'none',
+        qualityScore: 0,
+        dateCoverage: 0,
+        signalRatio: 0,
+      });
       setAuditData({ aggregate_accuracy: 0, stability: 'Waiting for analysis', recommendation: '' });
     } catch (err) {
       console.error('Failed to fetch forecasts:', err);
@@ -1502,6 +1709,18 @@ const ForecastViewer = () => {
             <span className="text-[10px] font-semibold text-emerald-600">Live</span>
           </div>
         </div>
+
+        {!forecastQuality.signalReady && (
+          <div className="mx-6 mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3">
+            <p className="text-[11px] font-black uppercase tracking-[0.15em] text-amber-700">Forecast Quality Warning</p>
+            <p className="mt-1 text-sm font-semibold text-amber-800">
+              Clean sales signal low hai, isliye forecast ko estimate samjho, exact number nahi.
+            </p>
+            <p className="mt-1 text-xs text-amber-700">
+              Source: {forecastQuality.source} | Quality: {Math.round(forecastQuality.qualityScore)} | Date coverage: {Math.round(forecastQuality.dateCoverage * 100)}% | Signal ratio: {Math.round(forecastQuality.signalRatio * 100)}%
+            </p>
+          </div>
+        )}
 
         {/* ── Chart Section ── */}
         <div className="px-6 pt-6 pb-3">
@@ -1660,7 +1879,7 @@ const ForecastViewer = () => {
                       </tr>
                     </thead>
                     <tbody>
-                      {filteredHistoryRows.length === 0 ? (
+                      {tableRowsToRender.length === 0 ? (
                         <tr>
                           <td colSpan={10} className="px-4 py-12 text-center">
                             <div className="mx-auto max-w-md">
@@ -1675,12 +1894,14 @@ const ForecastViewer = () => {
                           </td>
                         </tr>
                       ) : (
-                        filteredHistoryRows.map((row) => {
+                        tableRowsToRender.map((row) => {
                           const paymentTone = row.paymentStatus === 'Paid'
                             ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
                             : (row.paymentStatus === 'Partial'
                               ? 'bg-amber-50 text-amber-700 border-amber-200'
-                              : 'bg-rose-50 text-rose-700 border-rose-200');
+                              : (row.paymentStatus === 'Projected' || row.paymentStatus === 'Mixed')
+                                ? 'bg-sky-50 text-sky-700 border-sky-200'
+                                : 'bg-rose-50 text-rose-700 border-rose-200');
 
                           return (
                             <tr key={row.id} className="align-top hover:bg-slate-50/80 transition-colors">
@@ -1706,7 +1927,7 @@ const ForecastViewer = () => {
                               </td>
                               <td className="px-6 py-5 border-b border-slate-100 last:border-r-0">
                                 <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider border ${paymentTone}`}>
-                                  <span className={`w-1 h-1 rounded-full mr-1.5 ${row.paymentStatus === 'Paid' ? 'bg-emerald-500' : (row.paymentStatus === 'Partial' ? 'bg-amber-500' : 'bg-rose-500')}`} />
+                                  <span className={`w-1 h-1 rounded-full mr-1.5 ${row.paymentStatus === 'Paid' ? 'bg-emerald-500' : (row.paymentStatus === 'Partial' ? 'bg-amber-500' : ((row.paymentStatus === 'Projected' || row.paymentStatus === 'Mixed') ? 'bg-sky-500' : 'bg-rose-500'))}`} />
                                   {row.paymentStatus}
                                 </span>
                               </td>

@@ -1,7 +1,7 @@
 from django.test import SimpleTestCase
 import pandas as pd
 
-from ingestion.demand_calculator import compute_inventory_metrics
+from ingestion.demand_calculator import compute_inventory_metrics, generate_full_analysis_payload
 
 
 class DemandCalculatorTests(SimpleTestCase):
@@ -237,4 +237,69 @@ class DemandCalculatorTests(SimpleTestCase):
 
         out = self._to_map(compute_inventory_metrics(pd.DataFrame(rows)))
         self.assertEqual(out['P7']['on_hand'], 273.0)
+
+    def test_full_payload_includes_clean_sales_series_and_forecast(self):
+        rows = [
+            {
+                'DATE': '2026-01-01',
+                'PRODUCT': 'P8',
+                'PARTY NAME': 'Party A',
+                'IN/OUT': 'OUT',
+                'QUANTITY': 10,
+                'CHECK QUANTITY': -40,
+            },
+            {
+                'DATE': '2026-01-02',
+                'PRODUCT': 'P8',
+                'PARTY NAME': 'Party A',
+                'IN/OUT': 'OUT',
+                'QUANTITY': 12,
+                'CHECK QUANTITY': -28,
+            },
+            {
+                'DATE': '2026-01-03',
+                'PRODUCT': 'P8',
+                'PARTY NAME': 'Party A',
+                'IN/OUT': 'OUT',
+                'QUANTITY': 14,
+                'CHECK QUANTITY': -14,
+            },
+        ]
+        payload = generate_full_analysis_payload(pd.DataFrame(rows))
+
+        self.assertTrue(isinstance(payload.get("past_sales_daily"), list))
+        self.assertEqual(len(payload.get("past_sales_daily")), 3)
+        self.assertTrue(isinstance(payload.get("demand_forecast"), list))
+        self.assertGreater(len(payload.get("demand_forecast")), 0)
+        self.assertEqual(payload.get("demand_forecast_is_synthetic"), False)
+        self.assertEqual(payload.get("demand_forecast_source"), "strict_clean_sales")
+        self.assertIn("next_365_days", payload.get("forecast", {}))
+
+    def test_full_payload_marks_low_signal_when_sales_rows_invalid(self):
+        rows = [
+            {
+                'DATE': '',
+                'PRODUCT': 'P9',
+                'PARTY NAME': 'Party A',
+                'IN/OUT': 'OUT',
+                'QUANTITY': 0,
+                'CHECK QUANTITY': 0,
+            },
+            {
+                'DATE': 'invalid-date',
+                'PRODUCT': 'P9',
+                'PARTY NAME': 'Party A',
+                'IN/OUT': 'RETURN',
+                'QUANTITY': 0,
+                'CHECK QUANTITY': 0,
+            },
+        ]
+        payload = generate_full_analysis_payload(pd.DataFrame(rows))
+
+        self.assertEqual(payload.get("demand_forecast_is_synthetic"), True)
+        self.assertEqual(payload.get("demand_forecast_source"), "insufficient_clean_signal")
+        self.assertEqual(payload.get("demand_forecast"), [])
+        self.assertEqual(payload.get("past_sales_daily"), [])
+        self.assertIn("metadata", payload)
+        self.assertIn("forecast_quality", payload.get("metadata", {}))
 

@@ -123,6 +123,38 @@ def _is_table_full_error(exc):
     return code == 1114 or 'is full' in text
 
 
+def _rows_have_inventory_markers_simple(rows):
+    if not isinstance(rows, list) or not rows:
+        return False
+    sample = rows[: min(len(rows), 50)]
+    keyset = set()
+    for row in sample:
+        if not isinstance(row, dict):
+            continue
+        for key in row.keys():
+            keyset.add(str(key).strip().upper())
+    required = {"PRODUCT", "IN/OUT", "QUANTITY", "CHECK QUANTITY", "DATE"}
+    return required.issubset(keyset)
+
+
+def _analysis_needs_strict_refresh(analysis):
+    if not isinstance(analysis, dict):
+        return True
+    metadata = analysis.get('metadata') if isinstance(analysis.get('metadata'), dict) else {}
+    quality = metadata.get('forecast_quality') if isinstance(metadata, dict) else None
+    source = str(analysis.get('demand_forecast_source') or '')
+    past_daily = analysis.get('past_sales_daily')
+    if not isinstance(past_daily, list) or len(past_daily) == 0:
+        return True
+    if not isinstance(quality, dict):
+        return True
+    if source not in {'strict_clean_sales', 'insufficient_clean_signal'}:
+        return True
+    if not {'quality_score', 'date_coverage_ratio', 'sales_signal_ratio'}.issubset(set(quality.keys())):
+        return True
+    return False
+
+
 def _prune_upload_payloads(keep_latest=6):
     """Release DB space by clearing large JSON payloads from older terminal uploads."""
     terminal_statuses = [DataCleanerRun.AnalysisStatus.COMPLETED, DataCleanerRun.AnalysisStatus.FAILED, DataCleanerRun.AnalysisStatus.SUCCESS]
@@ -580,6 +612,17 @@ class LatestAnalysisView(APIView):
                     analysis = None
                     analysis_error = 'Analysis generation failed'
 
+            if payload_obj.raw_data and _rows_have_inventory_markers_simple(payload_obj.raw_data):
+                if _analysis_needs_strict_refresh(analysis):
+                    try:
+                        refreshed = build_universal_analysis(payload_obj.raw_data)
+                        if refreshed and isinstance(refreshed, dict):
+                            analysis = refreshed
+                            payload_obj.analysis_snapshot = analysis
+                            payload_obj.save(update_fields=['analysis_snapshot'])
+                    except Exception as exc:
+                        logger.exception('Latest strict snapshot refresh failed for upload %s: %s', latest_upload.id, exc)
+
             # Existing legacy snapshots can carry non-business order quantities for strict inventory sheets.
             # Regenerate deterministically from raw rows when inventory markers are present.
             if analysis and payload_obj.raw_data and _rows_have_inventory_markers(payload_obj.raw_data):
@@ -672,6 +715,17 @@ class UploadAnalysisView(APIView):
                 return Response(cached_payload)
 
             analysis = payload_obj.analysis_snapshot or None
+            if payload_obj.raw_data and _rows_have_inventory_markers_simple(payload_obj.raw_data):
+                if _analysis_needs_strict_refresh(analysis):
+                    try:
+                        refreshed = build_universal_analysis(payload_obj.raw_data)
+                        if refreshed and isinstance(refreshed, dict):
+                            analysis = refreshed
+                            payload_obj.analysis_snapshot = analysis
+                            payload_obj.save(update_fields=['analysis_snapshot'])
+                    except Exception as exc:
+                        logger.exception('Upload strict snapshot refresh failed for upload %s: %s', upload.id, exc)
+
             if analysis and isinstance(analysis, dict):
                 analysis = _inject_sheet_metadata(analysis, upload)
                 analysis = json.loads(json.dumps(analysis, default=str))

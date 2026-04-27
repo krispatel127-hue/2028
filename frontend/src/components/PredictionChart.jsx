@@ -17,7 +17,18 @@ const SHORT_DATE_FORMATTER = new Intl.DateTimeFormat('en-US', {
   year: '2-digit',
 });
 
+const MONTH_DAY_FORMATTER = new Intl.DateTimeFormat('en-US', {
+  day: '2-digit',
+  month: 'short',
+});
+
 const LONG_DATE_FORMATTER = new Intl.DateTimeFormat('en-US', {
+  day: '2-digit',
+  month: 'short',
+  year: 'numeric',
+});
+
+const YEAR_LABEL_FORMATTER = new Intl.DateTimeFormat('en-US', {
   month: 'short',
   year: 'numeric',
 });
@@ -29,7 +40,27 @@ const toFiniteNumber = (value) => {
 
 const parseDate = (value) => {
   if (!value) return null;
-  const date = value instanceof Date ? value : new Date(value);
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value;
+  }
+  const raw = String(value).trim();
+  if (!raw) return null;
+
+  const isoDayMatch = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (isoDayMatch) {
+    const [, yyyy, mm, dd] = isoDayMatch;
+    const parsed = new Date(Number(yyyy), Number(mm) - 1, Number(dd));
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+
+  const isoMonthMatch = raw.match(/^(\d{4})-(\d{2})$/);
+  if (isoMonthMatch) {
+    const [, yyyy, mm] = isoMonthMatch;
+    const parsed = new Date(Number(yyyy), Number(mm) - 1, 1);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+
+  const date = new Date(raw);
   return Number.isNaN(date.getTime()) ? null : date;
 };
 
@@ -38,13 +69,18 @@ const isHourLabel = (value) => /^\d{2}:\d{2}$/.test(String(value || '').trim());
 const formatShortDate = (value, horizon = 'month') => {
   if (horizon === 'day' && isHourLabel(value)) return String(value);
   const parsed = parseDate(value);
-  return parsed ? SHORT_DATE_FORMATTER.format(parsed) : String(value || '');
+  if (!parsed) return String(value || '');
+  if (horizon === 'month') return MONTH_DAY_FORMATTER.format(parsed);
+  if (horizon === 'year') return SHORT_DATE_FORMATTER.format(parsed);
+  return LONG_DATE_FORMATTER.format(parsed);
 };
 
 const formatLongDate = (value, horizon = 'month') => {
   if (horizon === 'day' && isHourLabel(value)) return `${String(value)} block`;
   const parsed = parseDate(value);
-  return parsed ? LONG_DATE_FORMATTER.format(parsed) : String(value || '');
+  if (!parsed) return String(value || '');
+  if (horizon === 'year') return YEAR_LABEL_FORMATTER.format(parsed);
+  return LONG_DATE_FORMATTER.format(parsed);
 };
 
 const getHorizonLimit = (horizon) => {

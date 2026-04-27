@@ -31,6 +31,9 @@ def compute_inventory_metrics(df: pd.DataFrame) -> list:
 
     # Standardize column casing for robustness and avoid trailing spaces
     df.columns = df.columns.str.strip().str.upper()
+    # Guard against duplicate logical headers after normalization (e.g. "Party Name" and "PARTY NAME ")
+    if df.columns.duplicated().any():
+        df = df.loc[:, ~df.columns.duplicated()].copy()
     
     # Map any aliased columns if needed (e.g. PARTY NAME to PARTY_NAME)
     col_mapping = {
@@ -178,12 +181,213 @@ def compute_inventory_metrics(df: pd.DataFrame) -> list:
     return records
 
 
+def _compute_confidence_label(score: float) -> str:
+    if score >= 85:
+        return "HIGH"
+    if score >= 65:
+        return "MEDIUM"
+    return "LOW"
+
+
+def _build_strict_sales_series(df: pd.DataFrame) -> tuple[list, dict]:
+    if df is None or df.empty:
+        return [], {
+            "total_rows": 0,
+            "valid_date_rows": 0,
+            "valid_out_rows": 0,
+            "valid_out_qty_rows": 0,
+            "clean_daily_points": 0,
+            "date_coverage_ratio": 0.0,
+            "sales_signal_ratio": 0.0,
+            "quality_score": 0.0,
+        }
+
+    working = df.copy()
+    working.columns = working.columns.str.strip().str.upper()
+    if working.columns.duplicated().any():
+        working = working.loc[:, ~working.columns.duplicated()].copy()
+
+    date_col = "DATE" if "DATE" in working.columns else None
+    qty_col = "QUANTITY" if "QUANTITY" in working.columns else None
+    io_col = "IN/OUT" if "IN/OUT" in working.columns else None
+
+    if not date_col or not qty_col:
+        return [], {
+            "total_rows": int(len(working)),
+            "valid_date_rows": 0,
+            "valid_out_rows": 0,
+            "valid_out_qty_rows": 0,
+            "clean_daily_points": 0,
+            "date_coverage_ratio": 0.0,
+            "sales_signal_ratio": 0.0,
+            "quality_score": 0.0,
+        }
+
+    working["_date_parsed"] = _parse_mixed_dates(working[date_col])
+    working["_qty"] = pd.to_numeric(working[qty_col], errors='coerce')
+    if io_col:
+        io = working[io_col].astype(str).str.strip().str.upper()
+    else:
+        io = pd.Series(["OUT"] * len(working), index=working.index)
+    working["_io"] = io
+
+    valid_date_mask = working["_date_parsed"].notna()
+    out_mask = working["_io"].isin(["OUT", "SALE", "DELIVERY", "DISPATCH", "INVOICE"])
+    positive_qty_mask = working["_qty"].notna() & (working["_qty"].abs() > 0)
+
+    clean = working[valid_date_mask & out_mask & positive_qty_mask].copy()
+    if clean.empty:
+        quality = {
+            "total_rows": int(len(working)),
+            "valid_date_rows": int(valid_date_mask.sum()),
+            "valid_out_rows": int((valid_date_mask & out_mask).sum()),
+            "valid_out_qty_rows": 0,
+            "clean_daily_points": 0,
+            "date_coverage_ratio": round(float(valid_date_mask.mean()), 4) if len(working) else 0.0,
+            "sales_signal_ratio": 0.0,
+            "quality_score": 0.0,
+        }
+        return [], quality
+
+    clean["_qty_abs"] = clean["_qty"].abs()
+    daily = (
+        clean.groupby(clean["_date_parsed"].dt.date)["_qty_abs"]
+        .sum()
+        .sort_index()
+    )
+
+    past_sales_daily = [
+        {"date": str(day), "actual": round(float(value), 2)}
+        for day, value in daily.items()
+    ]
+
+    coverage = float(valid_date_mask.mean()) if len(working) else 0.0
+    signal_ratio = float((valid_date_mask & out_mask & positive_qty_mask).mean()) if len(working) else 0.0
+    points_score = min(1.0, len(past_sales_daily) / 365.0)
+    quality_score = round((coverage * 0.35 + signal_ratio * 0.45 + points_score * 0.20) * 100, 2)
+
+    quality = {
+        "total_rows": int(len(working)),
+        "valid_date_rows": int(valid_date_mask.sum()),
+        "valid_out_rows": int((valid_date_mask & out_mask).sum()),
+        "valid_out_qty_rows": int((valid_date_mask & out_mask & positive_qty_mask).sum()),
+        "clean_daily_points": int(len(past_sales_daily)),
+        "date_coverage_ratio": round(coverage, 4),
+        "sales_signal_ratio": round(signal_ratio, 4),
+        "quality_score": quality_score,
+    }
+    return past_sales_daily, quality
+
+
+def _build_weekly_sales(past_sales_daily: list) -> list:
+    if not past_sales_daily:
+        return []
+    df = pd.DataFrame(past_sales_daily)
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df["actual"] = pd.to_numeric(df["actual"], errors="coerce").fillna(0.0)
+    df = df.dropna(subset=["date"])
+    if df.empty:
+        return []
+
+    weekly = (
+        df.set_index("date")["actual"]
+        .resample("W-MON")
+        .sum()
+        .sort_index()
+    )
+    return [
+        {"date": d.strftime("%Y-%m-%d"), "actual": round(float(v), 2)}
+        for d, v in weekly.items()
+    ]
+
+
+def _build_forecast_from_past_sales(past_sales_daily: list, horizon_days: int = 90) -> tuple[list, list]:
+    if not past_sales_daily:
+        return [], []
+
+    df = pd.DataFrame(past_sales_daily)
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df["actual"] = pd.to_numeric(df["actual"], errors="coerce").fillna(0.0)
+    df = df.dropna(subset=["date"]).sort_values("date")
+    if df.empty:
+        return [], []
+
+    recent_window = df.tail(min(len(df), 56)).copy()
+    baseline = float(recent_window["actual"].mean()) if not recent_window.empty else 0.0
+    baseline = max(0.0, baseline)
+
+    # Deterministic weekday seasonality learned from recent clean rows.
+    weekday_avg = recent_window.groupby(recent_window["date"].dt.weekday)["actual"].mean().to_dict()
+    overall = max(1.0, baseline)
+    weekday_factor = {
+        wd: float(np.clip((weekday_avg.get(wd, overall) / overall), 0.75, 1.25))
+        for wd in range(7)
+    }
+
+    last_day = df["date"].iloc[-1].to_pydatetime()
+    demand_forecast = []
+    next_365_days = []
+
+    for i in range(1, 366):
+        target_date = last_day + pd.Timedelta(days=i)
+        factor = weekday_factor.get(target_date.weekday(), 1.0)
+        predicted = max(0.0, baseline * factor)
+        lower = max(0.0, predicted * 0.9)
+        upper = max(0.0, predicted * 1.1)
+        next_365_days.append(round(float(predicted), 2))
+        if i <= horizon_days:
+            demand_forecast.append({
+                "date": target_date.strftime("%Y-%m-%d"),
+                "predicted": round(float(predicted), 2),
+                "predicted_demand": round(float(predicted), 2),
+                "lower": round(float(lower), 2),
+                "lower_bound": round(float(lower), 2),
+                "upper": round(float(upper), 2),
+                "upper_bound": round(float(upper), 2),
+                "production": round(float(predicted * 1.12), 2),
+            })
+
+    return demand_forecast, next_365_days
+
+
+def _derive_sales_summary(past_sales_daily: list) -> dict:
+    if not past_sales_daily:
+        return {"total_sales": 0.0, "trend": "Insufficient data"}
+
+    vals = [float(row.get("actual", 0) or 0) for row in past_sales_daily]
+    total_sales = round(float(sum(vals)), 2)
+    if len(vals) < 14:
+        return {"total_sales": total_sales, "trend": "Insufficient data"}
+
+    recent = np.mean(vals[-30:]) if len(vals) >= 30 else np.mean(vals[-7:])
+    prev = np.mean(vals[-60:-30]) if len(vals) >= 60 else np.mean(vals[:-7] or [0])
+    if prev <= 0:
+        trend = "Stable"
+    else:
+        delta = (recent - prev) / prev
+        if delta > 0.08:
+            trend = "Uptrend"
+        elif delta < -0.08:
+            trend = "Downtrend"
+        else:
+            trend = "Stable"
+    return {"total_sales": total_sales, "trend": trend}
+
+
 def generate_full_analysis_payload(df: pd.DataFrame) -> dict:
     """
     Wraps compute_inventory_metrics into the standard 'analysis_package' JSON format
     consumed by AIRealTimeProcessor.jsx and InventoryRisks.jsx.
     """
     metrics = compute_inventory_metrics(df)
+    past_sales_daily, quality = _build_strict_sales_series(df)
+    past_sales_weekly = _build_weekly_sales(past_sales_daily)
+    demand_forecast, next_365_days = _build_forecast_from_past_sales(past_sales_daily, horizon_days=90)
+    sales_summary = _derive_sales_summary(past_sales_daily)
+
+    confidence_score = quality.get("quality_score", 0.0)
+    confidence_label = _compute_confidence_label(confidence_score)
+    has_forecast_signal = bool(past_sales_daily and demand_forecast)
     
     products_analysis = []
     out_of_stock = 0
@@ -238,15 +442,27 @@ def generate_full_analysis_payload(df: pd.DataFrame) -> dict:
             "risk": risk,
             "status": status_label,
             "health_status": status_label,
-            "confidence_score": 99.9, # Hardcoded confidence due to strict deterministic logic
+            "confidence_score": round(float(confidence_score), 2),
         })
-        
+
+    recommendations = []
+    if not has_forecast_signal:
+        recommendations.append("No reliable clean OUT sales timeline found. Upload complete dated sales transactions for forecasting.")
+    if quality.get("date_coverage_ratio", 0) < 0.9:
+        recommendations.append("Date coverage is below 90%. Fix invalid/missing dates to improve forecast accuracy.")
+    if quality.get("sales_signal_ratio", 0) < 0.7:
+        recommendations.append("Many rows are not valid sales signal rows. Ensure IN/OUT and QUANTITY values are consistent.")
+
+    if not recommendations:
+        recommendations.append("Clean sales signal quality looks stable. Forecast uses strict date + quantity ledger rows only.")
+
     return {
         "analysis_isolation": {
             "analysis_mode": "DETERMINISTIC_RULES",
-            "confidence": "VERIFIED_ACCURATE"
+            "confidence": confidence_label
         },
-        "confidence_score": 99.9,
+        "confidence_score": round(float(confidence_score), 2),
+        "confidence_label": confidence_label,
         "summary": {
             "overview": "Data processed with strict ledger inventory rules preventing double counting.",
             "total_products": len(products_analysis),
@@ -263,6 +479,24 @@ def generate_full_analysis_payload(df: pd.DataFrame) -> dict:
             "overstock_items": overstock,
             "healthy_items": healthy,
         },
+        "sales_summary": sales_summary,
+        "past_sales_daily": past_sales_daily,
+        "past_sales_weekly": past_sales_weekly,
+        "past_sales": past_sales_daily,
+        "demand_forecast": demand_forecast,
+        "demand_forecast_is_synthetic": not has_forecast_signal,
+        "demand_forecast_source": "strict_clean_sales" if has_forecast_signal else "insufficient_clean_signal",
+        "forecast": {
+            "next_365_days": next_365_days,
+        },
+        "metadata": {
+            "analysis_mode": "DETERMINISTIC_RULES",
+            "confidence": confidence_label,
+            "forecast_quality": quality,
+            "forecast_signal_ready": has_forecast_signal,
+            "warnings": [] if has_forecast_signal else ["Forecast signal quality is low due to insufficient clean sales rows."],
+        },
+        "recommendations": recommendations,
         "products_analysis": products_analysis,
         # Maintain legacy keys just in case
         "products": products_analysis,

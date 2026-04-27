@@ -246,6 +246,7 @@ const buildDemandForecast = (products = []) => {
         production: Math.round(daily * 8),
         lower_bound: Math.round(daily * 6),
         upper_bound: Math.round(daily * 9),
+        _synthetic: true,
       });
     }
   });
@@ -304,9 +305,14 @@ const normalizeAnalysisPayload = (payload) => {
     );
   }
 
-  const demandForecast = Array.isArray(payload.demand_forecast) && payload.demand_forecast.length
+  const hasNativeDemandForecast = Array.isArray(payload.demand_forecast) && payload.demand_forecast.length > 0;
+  const backendExplicitNoSignal = (
+    payload?.metadata?.forecast_signal_ready === false
+    || payload?.demand_forecast_source === 'insufficient_clean_signal'
+  );
+  const demandForecast = hasNativeDemandForecast
     ? payload.demand_forecast
-    : buildDemandForecast(products);
+    : (backendExplicitNoSignal ? [] : buildDemandForecast(products));
 
   const recommendations = Array.isArray(payload.recommendations) && payload.recommendations.length
     ? payload.recommendations
@@ -328,6 +334,10 @@ const normalizeAnalysisPayload = (payload) => {
     stock_analysis: stockAnalysis,
     inventory_summary: inventorySummary,
     demand_forecast: demandForecast,
+    demand_forecast_is_synthetic: backendExplicitNoSignal ? true : !hasNativeDemandForecast,
+    demand_forecast_source: hasNativeDemandForecast
+      ? 'analysis'
+      : (backendExplicitNoSignal ? 'insufficient_clean_signal' : 'derived_inventory_velocity'),
     forecast: {
       ...(payload.forecast || {}),
       next_3_months: [1, 2, 3].map((i) => {
