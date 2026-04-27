@@ -40,6 +40,8 @@ import {
   Tooltip,
   Cell,
   LabelList,
+  PieChart,
+  Pie,
 } from 'recharts';
 import api from '../api/client';
 import { useAnalysis } from '../context/useAnalysis';
@@ -1197,7 +1199,7 @@ const ForecastViewer = () => {
 
     return Array.from(byCustomer.values())
       .sort((a, b) => (b.totalAmount - a.totalAmount) || (b.quantity - a.quantity))
-      .slice(0, 3);
+      .slice(0, 5);
   }, [filteredHistoryRows]);
 
   const selectionLabel = useMemo(() => {
@@ -1718,6 +1720,232 @@ const ForecastViewer = () => {
               </div>
             )}
           </div>
+
+        {/* ── Business Distribution Charts ── */}
+        <div className="border-t border-slate-100 bg-slate-50/30 px-6 py-6">
+          <div className="mb-6 flex items-center justify-between">
+            <div>
+              <p className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">Business Distribution</p>
+              <h4 className="mt-1 text-lg font-black text-slate-900">
+                {forecastViewMode === 'chart' ? 'Top Products & Customers' : 'Top Entities Ledger'}
+              </h4>
+            </div>
+          </div>
+          
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {/* Product Donut Chart */}
+            <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm hover:shadow-md transition-shadow">
+              <div className="flex items-center gap-3 mb-4">
+                <div className="w-10 h-10 rounded-xl bg-violet-500/10 text-violet-600 flex items-center justify-center">
+                  <Package size={18} />
+                </div>
+                <div>
+                  <h5 className="text-sm font-bold text-slate-900">Demand by Product</h5>
+                  <p className="text-[11px] text-slate-500 font-medium">Top 5 items</p>
+                </div>
+              </div>
+              
+              {forecastViewMode === 'chart' ? (
+                <div className="h-[250px] relative">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie
+                        data={trendData}
+                        cx="50%"
+                        cy="50%"
+                        innerRadius={65}
+                        outerRadius={95}
+                        paddingAngle={4}
+                        dataKey="value"
+                        nameKey="name"
+                        stroke="none"
+                        animationDuration={1500}
+                      >
+                        {trendData.map((entry, index) => (
+                          <Cell key={`cell-${index}`} fill={entry.color} />
+                        ))}
+                      </Pie>
+                      <Tooltip
+                        cursor={false}
+                        content={({ active, payload }) => {
+                          if (active && payload && payload.length) {
+                            const data = payload[0].payload;
+                            return (
+                              <div className="rounded-2xl border border-white/40 bg-white/90 backdrop-blur-xl px-4 py-3 shadow-xl">
+                                <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1">{data.fullName || data.name}</p>
+                                <p className="text-lg font-black" style={{ color: data.color }}>
+                                  {formatUnits(data.value)}
+                                  <span className="text-[10px] font-bold text-slate-400 ml-1 uppercase">Units</span>
+                                </p>
+                              </div>
+                            );
+                          }
+                          return null;
+                        }}
+                      />
+                    </PieChart>
+                  </ResponsiveContainer>
+                  {/* Glowing center text */}
+                  <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Total</p>
+                    <p className="text-xl font-black text-slate-900 mt-0.5">{formatUnits(trendSummary.totalUnits)}</p>
+                  </div>
+                </div>
+              ) : (
+                <div className="h-[250px] overflow-y-auto custom-scrollbar pr-2">
+                  <table className="w-full border-separate border-spacing-0">
+                    <thead className="bg-slate-50/80 sticky top-0 z-10">
+                      <tr>
+                        <th className="px-4 py-3 text-left text-[10px] font-black uppercase tracking-widest text-slate-400 border-b border-slate-100 rounded-tl-xl">Product</th>
+                        <th className="px-4 py-3 text-right text-[10px] font-black uppercase tracking-widest text-slate-400 border-b border-slate-100">Share</th>
+                        <th className="px-4 py-3 text-right text-[10px] font-black uppercase tracking-widest text-slate-400 border-b border-slate-100 rounded-tr-xl">Volume</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {trendData.slice(0, 5).map((item, idx) => (
+                        <tr key={idx} className="hover:bg-slate-50/50 transition-colors group">
+                          <td className="px-4 py-3 border-b border-slate-50">
+                            <div className="flex items-center gap-3">
+                              <span className="w-2.5 h-2.5 rounded-full shadow-sm" style={{ backgroundColor: item.color }} />
+                              <p className="text-sm font-bold text-slate-800 truncate max-w-[150px] group-hover:text-emerald-600 transition-colors">{item.fullName || item.name}</p>
+                            </div>
+                          </td>
+                          <td className="px-4 py-3 border-b border-slate-50 text-right">
+                            <span className="text-[11px] font-bold text-slate-500">
+                              {trendSummary.totalUnits > 0 ? `${Math.round((item.value / trendSummary.totalUnits) * 100)}%` : '0%'}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3 border-b border-slate-50 text-right">
+                            <p className="text-sm font-black text-slate-900 tabular-nums">{formatUnits(item.value)}</p>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            {/* Customer Horizontal Bar Chart */}
+            <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm hover:shadow-md transition-shadow">
+              <div className="flex items-center gap-3 mb-4">
+                <div className="w-10 h-10 rounded-xl bg-sky-500/10 text-sky-600 flex items-center justify-center">
+                  <Users size={18} />
+                </div>
+                <div>
+                  <h5 className="text-sm font-bold text-slate-900">Revenue by Customer</h5>
+                  <p className="text-[11px] text-slate-500 font-medium">Top 5 clients</p>
+                </div>
+              </div>
+              
+              {forecastViewMode === 'chart' ? (
+                <div className="h-[250px]">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart
+                      data={topHistoryCustomers}
+                      layout="vertical"
+                      margin={{ top: 10, right: 30, left: 0, bottom: 0 }}
+                    >
+                      <defs>
+                        <linearGradient id="customerGradient" x1="0" y1="0" x2="1" y2="0">
+                          <stop offset="0%" stopColor="#3b82f6" stopOpacity={0.8} />
+                          <stop offset="100%" stopColor="#0ea5e9" stopOpacity={1} />
+                        </linearGradient>
+                      </defs>
+                      <CartesianGrid strokeDasharray="3 4" horizontal={true} vertical={false} stroke="#e2e8f0" opacity={0.5} />
+                      <XAxis type="number" hide />
+                      <YAxis 
+                        type="category" 
+                        dataKey="customerName" 
+                        axisLine={false} 
+                        tickLine={false} 
+                        tick={{ fill: '#64748b', fontSize: 11, fontWeight: 600 }} 
+                        width={90}
+                        tickFormatter={(val) => val.length > 10 ? `${val.substring(0,9)}...` : val}
+                      />
+                      <Tooltip
+                        cursor={{ fill: '#f8fafc' }}
+                        content={({ active, payload }) => {
+                          if (active && payload && payload.length) {
+                            const data = payload[0].payload;
+                            return (
+                              <div className="rounded-2xl border border-white/40 bg-white/90 backdrop-blur-xl px-4 py-3 shadow-xl">
+                                <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">{data.customerName}</p>
+                                <div className="space-y-1">
+                                  <p className="text-xs font-semibold text-slate-600 flex justify-between gap-4">
+                                    <span>Revenue:</span>
+                                    <span className="font-black text-sky-600">{formatCompactCurrency(data.totalAmount)}</span>
+                                  </p>
+                                  <p className="text-xs font-semibold text-slate-600 flex justify-between gap-4">
+                                    <span>Orders:</span>
+                                    <span className="font-bold text-slate-900">{data.orders}</span>
+                                  </p>
+                                  <p className="text-xs font-semibold text-slate-600 flex justify-between gap-4">
+                                    <span>Units:</span>
+                                    <span className="font-bold text-slate-900">{formatUnits(data.quantity)}</span>
+                                  </p>
+                                </div>
+                              </div>
+                            );
+                          }
+                          return null;
+                        }}
+                      />
+                      <Bar 
+                        dataKey="totalAmount" 
+                        fill="url(#customerGradient)" 
+                        radius={[0, 8, 8, 0]} 
+                        barSize={20}
+                        animationDuration={1500}
+                      >
+                        <LabelList 
+                          dataKey="totalAmount" 
+                          position="right" 
+                          formatter={(val) => formatCompactCurrency(val)}
+                          style={{ fill: '#334155', fontSize: 10, fontWeight: 700 }}
+                        />
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              ) : (
+                <div className="h-[250px] overflow-y-auto custom-scrollbar pr-2">
+                  <table className="w-full border-separate border-spacing-0">
+                    <thead className="bg-slate-50/80 sticky top-0 z-10">
+                      <tr>
+                        <th className="px-4 py-3 text-left text-[10px] font-black uppercase tracking-widest text-slate-400 border-b border-slate-100 rounded-tl-xl">Client</th>
+                        <th className="px-4 py-3 text-center text-[10px] font-black uppercase tracking-widest text-slate-400 border-b border-slate-100">Orders</th>
+                        <th className="px-4 py-3 text-right text-[10px] font-black uppercase tracking-widest text-slate-400 border-b border-slate-100 rounded-tr-xl">Revenue</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {topHistoryCustomers.slice(0, 5).map((cust, idx) => (
+                        <tr key={idx} className="hover:bg-sky-50/30 transition-colors group">
+                          <td className="px-4 py-3 border-b border-slate-50">
+                            <div className="flex items-center gap-3">
+                              <div className="flex h-6 w-6 items-center justify-center rounded-full bg-sky-100 text-[10px] font-black text-sky-600 shadow-sm border border-sky-200">
+                                {idx + 1}
+                              </div>
+                              <p className="text-sm font-bold text-slate-800 truncate max-w-[150px] group-hover:text-sky-600 transition-colors">{cust.customerName}</p>
+                            </div>
+                          </td>
+                          <td className="px-4 py-3 border-b border-slate-50 text-center">
+                            <span className="inline-flex items-center justify-center min-w-[2rem] h-6 rounded-full bg-slate-100 text-[11px] font-bold text-slate-600 border border-slate-200">
+                              {cust.orders}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3 border-b border-slate-50 text-right">
+                            <p className="text-sm font-black text-slate-900 tabular-nums">{formatCompactCurrency(cust.totalAmount)}</p>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
 
         {/* ── Product Cards Grid ── */}
         <div className="border-t border-slate-100 bg-gradient-to-b from-white to-slate-50/60 px-6 py-6">

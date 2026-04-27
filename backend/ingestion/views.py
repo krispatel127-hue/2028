@@ -58,41 +58,6 @@ def _to_json_db_safe(value):
     return str(value)
 
 
-def _generate_best_analysis_from_rows(rows):
-    if not isinstance(rows, list) or not rows:
-        return None
-    return build_universal_analysis(rows)
-
-
-def _rows_have_inventory_markers(rows):
-    if not isinstance(rows, list) or not rows or not isinstance(rows[0], dict):
-        return False
-    keys = {str(k).upper().strip() for k in rows[0].keys()}
-    return {"PRODUCT", "IN/OUT", "QUANTITY", "CHECK QUANTITY"}.issubset(keys)
-
-
-def _is_deterministic_inventory_snapshot(analysis):
-    if not isinstance(analysis, dict):
-        return False
-    isolation = analysis.get('analysis_isolation') if isinstance(analysis.get('analysis_isolation'), dict) else {}
-    mode = str(isolation.get('analysis_mode') or '').upper()
-    return mode == 'DETERMINISTIC_RULES'
-
-
-def _is_flat_forecast(values, min_span=1.0):
-    if not isinstance(values, list) or len(values) < 3:
-        return False
-    numeric = [float(v) for v in values if isinstance(v, (int, float))]
-    if len(numeric) < 3:
-        return False
-    return (max(numeric) - min(numeric)) <= float(min_span)
-
-
-def _can_attempt_analysis(status):
-    current = str(status or '').upper()
-    # For any terminal/non-streaming status, try universal analysis from raw rows.
-    # This avoids blank UI when structured pipeline fails for non-standard sheets.
-    return current not in {DataCleanerRun.AnalysisStatus.PROCESSING}
 
 
 def _uploads_for_user_or_legacy(user):
@@ -707,33 +672,6 @@ class UploadAnalysisView(APIView):
                 return Response(cached_payload)
 
             analysis = payload_obj.analysis_snapshot or None
-            if analysis is None and payload_obj.raw_data and _can_attempt_analysis(upload.analysis_status):
-                if not payload_obj.raw_data:
-                    return Response({'error': 'Data not available'}, status=404)
-                try:
-                    analysis = _generate_best_analysis_from_rows(payload_obj.raw_data)
-                    payload_obj.analysis_snapshot = analysis
-                    payload_obj.save(update_fields=['analysis_snapshot'])
-                except ValueError:
-                    return Response({'error': 'Data not available'}, status=404)
-                except Exception as exc:
-                    logger.exception('Upload analysis generation failed for upload %s: %s', upload.id, exc)
-                    analysis = None
-                    analysis_error = 'Analysis generation failed'
-
-            # Existing legacy snapshots can carry non-business order quantities for strict inventory sheets.
-            # Regenerate deterministically from raw rows when inventory markers are present.
-            if analysis and payload_obj.raw_data and _rows_have_inventory_markers(payload_obj.raw_data):
-                if not _is_deterministic_inventory_snapshot(analysis):
-                    try:
-                        refreshed = _generate_best_analysis_from_rows(payload_obj.raw_data)
-                        if refreshed and isinstance(refreshed, dict):
-                            analysis = refreshed
-                            payload_obj.analysis_snapshot = analysis
-                            payload_obj.save(update_fields=['analysis_snapshot'])
-                    except Exception as exc:
-                        logger.exception('Upload inventory snapshot refresh failed for upload %s: %s', upload.id, exc)
-
             if analysis and isinstance(analysis, dict):
                 analysis = _inject_sheet_metadata(analysis, upload)
                 analysis = json.loads(json.dumps(analysis, default=str))

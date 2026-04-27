@@ -1286,6 +1286,7 @@ const Dashboard = () => {
   const hasUsableLiveAnalysis = hasUsableAnalysisPayload(liveAnalysis);
 
   const applyDashboardAnalysis = (analysisPayload) => {
+    if (!analysisPayload) return;
     timeoutInfoShownRef.current = false;
     setData((prev) => ({ ...prev, decisions: [] }));
     setAnalysis(analysisPayload);
@@ -1301,14 +1302,24 @@ const Dashboard = () => {
     setChartData([]);
   };
 
+  // Sync internal Dashboard state with the AnalysisContext
+  useEffect(() => {
+    if (hasUsableLiveAnalysis) {
+      applyDashboardAnalysis(liveAnalysis);
+    }
+  }, [liveAnalysisKey]);
+
   useEffect(() => {
     fetchDashboardData({ showLoader: !hasUsableLiveAnalysis && !initialAnalysisSnapshot, preferLive: true });
   }, []);
 
   useEffect(() => {
-    if (!latestMeta?.uploadId && !liveAnalysis) return;
+    // Only perform a fresh fetch if we have NO data at all, or if the upload ID has changed.
+    if (!latestMeta?.uploadId) return;
+    if (latestMeta.status === 'COMPLETED' && hasUsableLiveAnalysis) return;
+    
     fetchDashboardData({ showLoader: false, preferLive: true });
-  }, [latestMeta?.uploadId, latestMeta?.status, liveAnalysisKey]);
+  }, [latestMeta?.uploadId]);
 
   useEffect(() => {
     if (!analysis) return;

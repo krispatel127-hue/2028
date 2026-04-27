@@ -391,8 +391,15 @@ class ExcelProcessor:
                 continue
 
             # Date candidacy
-            # Parse element-wise to avoid noisy mixed-format inference warnings.
-            parsed_dates = non_null.astype(str).map(lambda value: pd.to_datetime(value, errors="coerce"))
+            # Parse using fast vectorized pd.to_datetime to avoid severe performance degradation on large datasets.
+            # Take a sample for inference if the dataset is large.
+            sample_size = min(len(non_null), 1000)
+            sample = non_null.head(sample_size)
+            import warnings
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                parsed_dates = pd.to_datetime(sample.astype(str), errors="coerce")
+            
             date_ratio = float(parsed_dates.notna().mean())
             if date_ratio > best_date_ratio and date_ratio >= 0.5:
                 best_date_ratio = date_ratio

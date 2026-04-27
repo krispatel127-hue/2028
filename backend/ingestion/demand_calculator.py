@@ -141,7 +141,7 @@ def compute_inventory_metrics(df: pd.DataFrame) -> list:
     )
     
     # Get ONLY the latest (last) row per product
-    latest_rows = stock_df.groupby('PRODUCT', as_index=False).tail(1)
+    latest_rows = stock_df.groupby('PRODUCT', as_index=False).tail(1).copy()
     
     # On-hand is based strictly on latest CHECK QUANTITY value.
     latest_rows['on_hand'] = latest_rows['CHECK QUANTITY'].abs()
