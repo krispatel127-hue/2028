@@ -225,6 +225,68 @@ const toInputMonth = (date = new Date()) => {
   return `${year}-${month}`;
 };
 
+const FESTIVAL_DATE_OVERRIDES = {
+  2026: {
+    holi: '2026-03-04',
+    eid_al_fitr: '2026-03-20',
+    raksha_bandhan: '2026-08-29',
+    navratri_start: '2026-10-12',
+    dussehra: '2026-10-20',
+    diwali: '2026-11-08',
+  },
+  2027: {
+    holi: '2027-03-24',
+    eid_al_fitr: '2027-03-10',
+    raksha_bandhan: '2027-08-18',
+    navratri_start: '2027-10-01',
+    dussehra: '2027-10-10',
+    diwali: '2027-10-29',
+  },
+  2028: {
+    holi: '2028-03-12',
+    eid_al_fitr: '2028-02-27',
+    raksha_bandhan: '2028-08-07',
+    navratri_start: '2028-09-20',
+    dussehra: '2028-09-29',
+    diwali: '2028-10-17',
+  },
+};
+
+const FESTIVAL_TEMPLATE = [
+  { key: 'new_year', name: 'New Year', month: 1, day: 1, category: 'National' },
+  { key: 'makar_sankranti', name: 'Makar Sankranti', month: 1, day: 14, category: 'Harvest' },
+  { key: 'republic_day', name: 'Republic Day', month: 1, day: 26, category: 'National' },
+  { key: 'holi', name: 'Holi', month: 3, day: 15, category: 'Seasonal' },
+  { key: 'eid_al_fitr', name: 'Eid al-Fitr', month: 4, day: 1, category: 'Religious' },
+  { key: 'raksha_bandhan', name: 'Raksha Bandhan', month: 8, day: 30, category: 'Seasonal' },
+  { key: 'navratri_start', name: 'Navratri Start', month: 10, day: 3, category: 'Seasonal' },
+  { key: 'dussehra', name: 'Dussehra', month: 10, day: 12, category: 'Seasonal' },
+  { key: 'diwali', name: 'Diwali', month: 11, day: 1, category: 'Seasonal' },
+  { key: 'christmas', name: 'Christmas', month: 12, day: 25, category: 'Seasonal' },
+];
+
+const toFestivalIso = (year, month, day) => `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+
+const buildFestivalCalendar = (year) => {
+  const numericYear = Number(year);
+  const safeYear = Number.isFinite(numericYear) ? numericYear : new Date().getFullYear();
+  const overrides = FESTIVAL_DATE_OVERRIDES[safeYear] || {};
+
+  return FESTIVAL_TEMPLATE
+    .map((festival) => {
+      const isoDate = overrides[festival.key] || toFestivalIso(safeYear, festival.month, festival.day);
+      const parsed = parseLooseDate(isoDate);
+      if (!parsed) return null;
+      return {
+        ...festival,
+        date: isoDate,
+        monthKey: toInputMonth(parsed),
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => (parseLooseDate(a.date)?.getTime() || 0) - (parseLooseDate(b.date)?.getTime() || 0));
+};
+
 const getRowDate = (row) => parseLooseDate(row?.period || row?.name || row?.date);
 
 const filterRowsByGranularity = (rows = [], granularity, selectedDay, selectedMonth, selectedYear) => {
@@ -1451,6 +1513,102 @@ const ForecastViewer = () => {
     return { latestSales, avgForecast, peakForecast };
   }, [displayPastData, displayForecastData]);
 
+  const festivalOutlook = useMemo(() => {
+    const selectedYearNumber = Number(selectedYear) || new Date().getFullYear();
+    const festivalCalendar = buildFestivalCalendar(selectedYearNumber);
+    const forecastRowsForYear = forecastRawData
+      .map((row) => {
+        const parsedDate = parseLooseDate(row?.period);
+        return {
+          parsedDate,
+          predicted: Number(row?.predicted || 0),
+        };
+      })
+      .filter((row) => row.parsedDate && row.parsedDate.getFullYear() === selectedYearNumber)
+      .map((row) => ({
+        date: toIsoDay(row.parsedDate),
+        predicted: row.predicted,
+      }))
+      .filter((row) => row.date && Number.isFinite(row.predicted));
+
+    const baselineDaily = forecastRowsForYear.length
+      ? (forecastRowsForYear.reduce((sum, row) => sum + row.predicted, 0) / forecastRowsForYear.length)
+      : Number(forecastStats.avgForecast || 0);
+
+    const forecastByDate = new Map(forecastRowsForYear.map((row) => [row.date, row.predicted]));
+
+    const daysInWindow = 3;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const annotatedFestivals = festivalCalendar.map((festival) => {
+      const center = parseLooseDate(festival.date);
+      if (!center) {
+        return {
+          ...festival,
+          projectedWindowSales: 0,
+          expectedDailySales: baselineDaily,
+          impactPct: 0,
+          impactDirection: 'flat',
+          confidence: 'Low',
+          isUpcoming: false,
+          daysUntil: null,
+          isToday: false,
+          isWithin45Days: false,
+        };
+      }
+      const centerDay = new Date(center);
+      centerDay.setHours(0, 0, 0, 0);
+      const dayDiff = Math.round((centerDay.getTime() - today.getTime()) / 86400000);
+      const isToday = dayDiff === 0;
+      const isUpcoming = dayDiff >= 0;
+      const isWithin45Days = isUpcoming && dayDiff <= 45;
+
+      let windowSum = 0;
+      let points = 0;
+      for (let offset = -daysInWindow; offset <= daysInWindow; offset += 1) {
+        const probe = new Date(center);
+        probe.setDate(center.getDate() + offset);
+        const key = toIsoDay(probe);
+        const predicted = Number(forecastByDate.get(key) || 0);
+        if (predicted > 0) {
+          windowSum += predicted;
+          points += 1;
+        }
+      }
+
+      const fallbackWindowSales = Math.max(0, baselineDaily) * ((daysInWindow * 2) + 1);
+      const projectedWindowSales = points > 0 ? windowSum : fallbackWindowSales;
+      const expectedDailySales = projectedWindowSales / ((daysInWindow * 2) + 1);
+      const impactPct = baselineDaily > 0 ? ((expectedDailySales - baselineDaily) / baselineDaily) * 100 : 0;
+      const impactDirection = impactPct > 5 ? 'up' : (impactPct < -5 ? 'down' : 'flat');
+      const confidence = points >= 4 ? 'High' : (points >= 2 ? 'Medium' : 'Low');
+
+      return {
+        ...festival,
+        projectedWindowSales,
+        expectedDailySales,
+        impactPct,
+        impactDirection,
+        confidence,
+        isUpcoming,
+        daysUntil: dayDiff,
+        isToday,
+        isWithin45Days,
+      };
+    });
+
+    const nextFestival = annotatedFestivals.find((festival) => festival.isUpcoming) || annotatedFestivals[0] || null;
+    const topImpactFestival = [...annotatedFestivals].sort((a, b) => (b.impactPct - a.impactPct))[0] || null;
+
+    return {
+      festivals: annotatedFestivals,
+      baselineDaily,
+      nextFestival,
+      topImpactFestival,
+    };
+  }, [selectedYear, forecastRawData, forecastStats.avgForecast]);
+
   const customerRowsSource = filteredHistoryRows.length > 0 ? filteredHistoryRows : fallbackTableRows;
 
   const topHistoryCustomers = useMemo(() => {
@@ -1768,6 +1926,101 @@ const ForecastViewer = () => {
         })}
       </div>
 
+      <div className="rounded-[1.75rem] border border-slate-200 bg-gradient-to-br from-amber-50/70 via-white to-emerald-50/40 p-5 shadow-sm">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <p className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-500">Festival Sales Outlook</p>
+            <h4 className="mt-1 text-lg font-black text-slate-900">AI festival-aware demand projection</h4>
+            <p className="mt-1 text-[12px] font-medium text-slate-600">
+              Selected year: {selectedYear} | Baseline daily sales: {formatUnits(Math.round(festivalOutlook.baselineDaily))}
+            </p>
+          </div>
+          <div className="rounded-2xl border border-amber-200 bg-white px-4 py-3 text-right shadow-sm">
+            <p className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-400">Next Festival</p>
+            <p className="mt-1 text-sm font-black text-slate-900">{festivalOutlook.nextFestival?.name || 'No data'}</p>
+            <p className="mt-0.5 text-[11px] font-semibold text-slate-500">{formatFriendlyDate(festivalOutlook.nextFestival?.date)}</p>
+            <p className="mt-1 text-[11px] font-black text-amber-700">
+              {festivalOutlook.nextFestival?.isToday
+                ? 'Today'
+                : (Number.isFinite(festivalOutlook.nextFestival?.daysUntil)
+                  ? `${festivalOutlook.nextFestival.daysUntil} days left`
+                  : 'Date pending')}
+            </p>
+          </div>
+        </div>
+
+        {festivalOutlook.nextFestival && (
+          <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3">
+            <p className="text-[10px] font-black uppercase tracking-[0.16em] text-amber-700">Festival Alert</p>
+            <p className="mt-1 text-sm font-bold text-amber-900">
+              {festivalOutlook.nextFestival.name} {festivalOutlook.nextFestival.isToday ? 'is today' : `in ${festivalOutlook.nextFestival.daysUntil} days`}:
+              Expected demand {festivalOutlook.nextFestival.impactPct >= 0 ? 'increase' : 'dip'} of {Math.abs(Math.round(festivalOutlook.nextFestival.impactPct || 0))}% vs baseline.
+            </p>
+          </div>
+        )}
+
+        <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-3">
+          <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
+            <p className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-400">Highest Uplift</p>
+            <p className="mt-1 text-sm font-black text-slate-900">{festivalOutlook.topImpactFestival?.name || 'No signal'}</p>
+            <p className="mt-0.5 text-[11px] font-semibold text-emerald-600">
+              {Number.isFinite(festivalOutlook.topImpactFestival?.impactPct)
+                ? `${festivalOutlook.topImpactFestival.impactPct >= 0 ? '+' : ''}${Math.round(festivalOutlook.topImpactFestival.impactPct)}% vs baseline`
+                : '0% vs baseline'}
+            </p>
+          </div>
+          <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
+            <p className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-400">Projected 7-Day Window</p>
+            <p className="mt-1 text-sm font-black text-slate-900">
+              {formatUnits(Math.round(festivalOutlook.nextFestival?.projectedWindowSales || 0))}
+            </p>
+            <p className="mt-0.5 text-[11px] font-semibold text-slate-500">Around next festival</p>
+          </div>
+          <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
+            <p className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-400">Forecast Confidence</p>
+            <p className="mt-1 text-sm font-black text-slate-900">{festivalOutlook.nextFestival?.confidence || 'Low'}</p>
+            <p className="mt-0.5 text-[11px] font-semibold text-slate-500">Based on date-level model coverage</p>
+          </div>
+        </div>
+
+        <div className="mt-4 overflow-hidden rounded-2xl border border-slate-200 bg-white">
+          <div className="grid grid-cols-12 border-b border-slate-100 bg-slate-50/80 px-4 py-3 text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">
+            <div className="col-span-4">Festival</div>
+            <div className="col-span-3 text-right">Date</div>
+            <div className="col-span-3 text-right">Expected Impact</div>
+            <div className="col-span-2 text-right">Sales Window</div>
+          </div>
+          <div className="max-h-56 overflow-y-auto">
+            {festivalOutlook.festivals.map((festival) => {
+              const impactClass = festival.impactDirection === 'up'
+                ? 'text-emerald-600'
+                : (festival.impactDirection === 'down' ? 'text-rose-600' : 'text-slate-500');
+              const impactLabel = `${festival.impactPct >= 0 ? '+' : ''}${Math.round(festival.impactPct)}%`;
+              return (
+                <div
+                  key={`${festival.key}-${festival.date}`}
+                  className={`grid grid-cols-12 items-center border-b px-4 py-3 text-sm last:border-b-0 ${festival.isWithin45Days ? 'border-amber-200 bg-amber-50/40' : 'border-slate-100'}`}
+                >
+                  <div className="col-span-4 min-w-0">
+                    <p className="truncate font-bold text-slate-900">
+                      {festival.name}
+                      {festival.isWithin45Days && (
+                        <span className="ml-2 inline-flex rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-black uppercase tracking-wide text-amber-700">
+                          Highlight
+                        </span>
+                      )}
+                    </p>
+                    <p className="text-[11px] font-semibold text-slate-500">{festival.category}</p>
+                  </div>
+                  <div className="col-span-3 text-right text-[12px] font-semibold text-slate-600">{formatFriendlyDate(festival.date)}</div>
+                  <div className={`col-span-3 text-right text-[12px] font-black ${impactClass}`}>{impactLabel}</div>
+                  <div className="col-span-2 text-right text-[12px] font-black text-slate-900">{formatUnits(Math.round(festival.projectedWindowSales || 0))}</div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
       {/* ── Main Card ── */}
       <GlassCard className="!p-0 !border-slate-200/60 dark:!border-white/10 !bg-white dark:!bg-slate-900/40 overflow-visible shadow-xl">
 
@@ -1789,6 +2042,14 @@ const ForecastViewer = () => {
             <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
             <span className="text-[10px] font-semibold text-emerald-600">Live</span>
           </div>
+          {festivalOutlook.nextFestival && (
+            <div className="ml-2 inline-flex items-center gap-1.5 rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+              <span className="text-[10px] font-black uppercase tracking-[0.12em] text-amber-700">
+                {festivalOutlook.nextFestival.name}
+              </span>
+            </div>
+          )}
         </div>
 
         {!forecastQuality.signalReady && (
