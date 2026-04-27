@@ -1284,14 +1284,13 @@ class AIAgentAnalyzer:
             if not all_custs:
                 all_custs = [{
                     "customer_id": "SYNTHETIC_AGGREGATE",
-                    "name": "Standard Market Volume",
-                    "company": "Market Flow",
+                    "name": "Projected Market Demand",
+                    "company": "Aggregate Analysis",
                     "total_purchased": float(avg_sales * 30), # Historical approximation
                     "fraction": 1.0,
                     "last_order": (datetime.utcnow() - timedelta(days=2)).strftime("%Y-%m-%d"),
                     "avg_gap_days": 1.0,
-                    "next_expected": (datetime.utcnow() + timedelta(days=1)).strftime("%Y-%m-%d"),
-                    "trend_tag": "Baseline Analysis 📊",
+                    "trend_tag": "Market Projection 📊",
                     "risk_level": "Low",
                     "growth_factor": 1.0
                 }]
@@ -2065,6 +2064,8 @@ class AIAgentAnalyzer:
                 "isolated_execution": True,
                 "source_row_count": int(len(self.df)),
                 "source_columns": list(self.df.columns),
+                "customer_mapping_status": "SUCCESS" if legacy_customers else "SKIPPED_NO_ID_COL",
+                "customer_mapping_note": "Customer IDs detected and mapped." if legacy_customers else "No clear customer mapping found. Displaying aggregate results only."
             },
         }
 

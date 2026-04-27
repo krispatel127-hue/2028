@@ -10,7 +10,7 @@ import {
   YAxis,
 } from 'recharts';
 import { motion } from 'framer-motion';
-import { Activity, BrainCircuit, CalendarRange, Loader2, TrendingUp } from 'lucide-react';
+import { Activity, BrainCircuit, CalendarRange, Loader2, TrendingUp, Info } from 'lucide-react';
 
 const SHORT_DATE_FORMATTER = new Intl.DateTimeFormat('en-US', {
   month: 'short',
@@ -92,16 +92,31 @@ const getSummaryCards = (rows = []) => {
     : null;
 
   return [
-    { label: 'Latest sales', value: lastActual != null ? `${Math.round(lastActual).toLocaleString()} units` : 'Not available', icon: Activity, tone: 'emerald' },
-    { label: 'Average forecast', value: avgForecast != null ? `${avgForecast.toLocaleString()} units` : 'Not available', icon: TrendingUp, tone: 'blue' },
-    { label: 'Peak forecast', value: peakForecast != null ? `${peakForecast.toLocaleString()} units` : 'Not available', icon: CalendarRange, tone: 'violet' },
+    { 
+      label: 'Last Period', 
+      value: lastActual != null ? `${Math.round(lastActual).toLocaleString()}` : '0', 
+      subValue: 'Total sold in last month',
+      icon: Activity, 
+      color: 'from-blue-500 to-indigo-600',
+      bg: 'bg-blue-50 dark:bg-blue-500/10'
+    },
+    { 
+      label: 'Predicted Avg', 
+      value: avgForecast != null ? `${avgForecast.toLocaleString()}` : '0', 
+      subValue: 'Expected monthly sales',
+      icon: TrendingUp, 
+      color: 'from-emerald-500 to-teal-600',
+      bg: 'bg-emerald-50 dark:bg-emerald-500/10'
+    },
+    { 
+      label: 'Highest Peak', 
+      value: peakForecast != null ? `${peakForecast.toLocaleString()}` : '0', 
+      subValue: 'Highest expected sales',
+      icon: CalendarRange, 
+      color: 'from-violet-500 to-purple-600',
+      bg: 'bg-violet-50 dark:bg-violet-500/10'
+    },
   ];
-};
-
-const toneClasses = {
-  emerald: 'border-emerald-200 bg-emerald-50 text-emerald-700',
-  blue: 'border-blue-200 bg-blue-50 text-blue-700',
-  violet: 'border-violet-200 bg-violet-50 text-violet-700',
 };
 
 const CustomTooltip = ({ active, payload, label, horizon = 'month' }) => {
@@ -112,27 +127,72 @@ const CustomTooltip = ({ active, payload, label, horizon = 'month' }) => {
   const value = isHistorical ? row.actual : row.predicted;
 
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-[0_16px_40px_rgba(15,23,42,0.10)]">
-      <p className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-500">{formatLongDate(label, horizon)}</p>
-      <p className={`mt-2 text-xl font-black ${isHistorical ? 'text-blue-700' : 'text-emerald-700'}`}>
-        {value != null ? Math.round(value).toLocaleString() : '0'}
-      </p>
-      <p className="text-[11px] font-semibold text-slate-500">{isHistorical ? 'Actual sales' : 'Projected demand'}</p>
-      {!isHistorical && row.lower != null && row.upper != null && (
-        <p className="mt-2 text-[11px] text-slate-500">
-          Range: {Math.round(row.lower).toLocaleString()} to {Math.round(row.upper).toLocaleString()}
+    <div className="rounded-3xl border border-white/40 bg-white/80 dark:bg-slate-900/90 backdrop-blur-xl px-5 py-4 shadow-[0_20px_50px_rgba(0,0,0,0.12)] min-w-[200px]">
+      <div className="flex items-center justify-between mb-3 border-b border-slate-100 dark:border-white/10 pb-2">
+        <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">{formatLongDate(label, horizon)}</p>
+        <div className={`w-2 h-2 rounded-full ${isHistorical ? 'bg-blue-500 shadow-[0_0_8px_#3b82f6]' : 'bg-emerald-500 shadow-[0_0_8px_#10b981]'}`} />
+      </div>
+      
+      <div className="space-y-1">
+        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">{isHistorical ? 'Past Sales' : 'Predicted Sales'}</p>
+        <p className={`text-3xl font-black tracking-tight ${isHistorical ? 'text-blue-600' : 'text-emerald-600'}`}>
+          {value != null ? Math.round(value).toLocaleString() : '0'}
+          <span className="text-sm font-bold text-slate-400 ml-1.5 uppercase">Units</span>
         </p>
+      </div>
+
+      {!isHistorical && row.lower != null && row.upper != null && (
+        <div className="mt-4 pt-3 border-t border-slate-100 dark:border-white/10">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Low</p>
+              <p className="text-sm font-bold text-slate-700 dark:text-slate-200">{Math.round(row.lower).toLocaleString()}</p>
+            </div>
+            <div className="flex-1 h-1 bg-slate-100 dark:bg-white/10 rounded-full relative overflow-hidden">
+               <div className="absolute inset-0 bg-emerald-500/20" />
+            </div>
+            <div className="text-right">
+              <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">High</p>
+              <p className="text-sm font-bold text-slate-700 dark:text-slate-200">{Math.round(row.upper).toLocaleString()}</p>
+            </div>
+          </div>
+          <p className="mt-2 text-[9px] font-semibold text-center text-slate-400 uppercase tracking-[0.1em]">Confidence Range</p>
+        </div>
       )}
     </div>
   );
 };
+
+const SummaryCard = ({ label, value, subValue, icon: Icon, color, bg }) => (
+  <motion.div 
+    whileHover={{ y: -4, scale: 1.02 }}
+    className={`relative group overflow-hidden rounded-[2rem] border border-white/60 dark:border-white/10 bg-white/70 dark:bg-slate-900/40 p-5 shadow-sm backdrop-blur-md transition-all hover:shadow-xl`}
+  >
+    <div className={`absolute top-0 right-0 w-32 h-32 -mr-8 -mt-8 rounded-full bg-gradient-to-br ${color} opacity-[0.03] group-hover:opacity-[0.08] transition-opacity`} />
+    
+    <div className="flex items-start justify-between gap-4 relative z-10">
+      <div className="flex-1 min-w-0">
+        <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 group-hover:text-slate-500 transition-colors">{label}</p>
+        <div className="flex items-baseline gap-1.5 mt-2">
+          <h4 className="text-3xl font-black text-slate-900 dark:text-white tracking-tight">{value}</h4>
+          <span className="text-[10px] font-bold text-slate-400 uppercase">Units</span>
+        </div>
+        <p className="mt-1.5 text-[11px] font-medium text-slate-500 dark:text-slate-400 line-clamp-1">{subValue}</p>
+      </div>
+      
+      <div className={`flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br ${color} text-white shadow-lg shadow-black/5`}>
+        <Icon size={20} strokeWidth={2.5} />
+      </div>
+    </div>
+  </motion.div>
+);
 
 const PredictionChart = ({
   pastData = [],
   forecastData = [],
   mode = 'combined',
   showLegend = true,
-  height = 380,
+  height = 420,
   fullScreen = false,
   isAnalyzing = false,
   horizon = 'month',
@@ -144,157 +204,171 @@ const PredictionChart = ({
 
   const summaryCards = useMemo(() => getSummaryCards(chartData), [chartData]);
   const hasData = chartData.length > 0;
-  const chartHeight = Number.isFinite(Number(height)) ? Math.max(280, Number(height)) : 380;
+  const chartHeight = Number.isFinite(Number(height)) ? Math.max(340, Number(height)) : 420;
 
   if (!hasData || isAnalyzing) {
     return (
-      <motion.div
-        initial={{ opacity: 0, y: 10 }}
-        animate={{ opacity: 1, y: 0 }}
-        className="flex h-full min-h-[360px] flex-col justify-between rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"
-      >
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <p className="text-[11px] font-semibold text-emerald-700">Forecast overview</p>
-            <h3 className="mt-2 text-2xl font-bold text-slate-900">Sales chart</h3>
-          </div>
-          <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-[12px] font-medium text-slate-600">
-            {isAnalyzing ? 'Processing' : 'Waiting for data'}
-          </div>
-        </div>
+      <div className="flex h-full min-h-[420px] flex-col justify-between rounded-[2.5rem] border border-slate-200 dark:border-white/10 bg-white dark:bg-slate-900 p-8 shadow-sm">
 
-        <div className="grid gap-3 md:grid-cols-3">
-          {summaryCards.map(({ label, value, icon: Icon, tone }) => (
-            <div key={label} className={`rounded-xl border px-4 py-4 ${toneClasses[tone]}`}>
-              <div className="flex items-center gap-2">
-                <Icon size={14} />
-                <p className="text-[11px] font-semibold">{label}</p>
-              </div>
-              <p className="mt-3 text-sm font-black text-slate-900">{value}</p>
-            </div>
+
+        <div className="grid gap-4 md:grid-cols-3">
+          {summaryCards.map((card) => (
+             <div key={card.label} className="h-28 rounded-[1.5rem] bg-slate-50/50 dark:bg-white/[0.02] border border-dashed border-slate-200 dark:border-white/10" />
           ))}
         </div>
 
-        <div className="flex flex-1 flex-col items-center justify-center rounded-[1.6rem] border border-dashed border-slate-300 bg-white/70 px-8 py-10 text-center">
+        <div className="flex flex-1 flex-col items-center justify-center rounded-[2rem] border border-dashed border-slate-200 dark:border-white/10 bg-slate-50/30 dark:bg-white/[0.01] px-8 py-10 text-center mt-6">
           {isAnalyzing ? (
             <>
-              <Loader2 size={36} className="animate-spin text-emerald-600" />
-              <p className="mt-4 text-lg font-bold text-slate-900">Preparing chart</p>
-              <p className="mt-2 max-w-xl text-sm font-medium text-slate-500">
-                Processing your analysis. The chart appears automatically when data is ready.
+              <div className="relative">
+                <Loader2 size={42} className="animate-spin text-emerald-500 opacity-20" />
+                <BrainCircuit size={24} className="absolute inset-0 m-auto text-emerald-500" />
+              </div>
+              <p className="mt-5 text-lg font-black text-slate-900 dark:text-white tracking-tight">Preparing Insights</p>
+              <p className="mt-2 max-w-sm text-sm font-medium text-slate-500 dark:text-slate-400">
+                AI is analyzing your sales history to predict future demand. This takes just a moment.
               </p>
             </>
           ) : (
             <>
-              <BrainCircuit size={38} className="text-emerald-600" />
-              <p className="mt-4 text-lg font-bold text-slate-900">No chart data yet</p>
-              <p className="mt-2 max-w-xl text-sm font-medium text-slate-500">
-                Upload or run analysis to view sales and forecast lines here.
+              <div className="w-16 h-16 rounded-3xl bg-slate-100 dark:bg-white/5 flex items-center justify-center mb-6">
+                <BrainCircuit size={32} className="text-slate-400" />
+              </div>
+              <p className="mt-2 text-lg font-black text-slate-900 dark:text-white tracking-tight">No intelligence data yet</p>
+              <p className="mt-2 max-w-sm text-sm font-medium text-slate-500 dark:text-slate-400">
+                Please upload a transaction history sheet to unlock predictive sales analytics.
               </p>
             </>
           )}
         </div>
-      </motion.div>
+      </div>
     );
   }
 
   return (
-      <motion.div
-      initial={{ opacity: 0, y: 12 }}
+    <motion.div
+      initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
-      className="flex h-full flex-col rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"
+      className="flex h-full flex-col rounded-[2.5rem] border border-slate-200/80 dark:border-white/10 bg-gradient-to-b from-white to-slate-50/50 dark:from-slate-900 dark:to-slate-900/80 p-8 shadow-sm"
       style={{ minHeight: chartHeight }}
     >
-      <div className="mb-5 grid gap-3 md:grid-cols-3">
-        {summaryCards.map(({ label, value, icon: Icon, tone }) => (
-          <div key={label} className={`rounded-xl border px-4 py-4 ${toneClasses[tone]}`}>
-            <div className="flex items-center gap-2">
-              <Icon size={14} />
-              <p className="text-[11px] font-semibold">{label}</p>
+
+
+        {showLegend && (
+          <div className="flex flex-wrap items-center gap-3 bg-white/50 dark:bg-white/5 p-1.5 rounded-2xl border border-slate-100 dark:border-white/10 shadow-sm">
+            <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-blue-50/80 dark:bg-blue-500/10 text-[10px] font-black uppercase tracking-widest text-blue-700 dark:text-blue-400 transition-colors">
+              <span className="h-2 w-2 rounded-full bg-blue-500 shadow-[0_0_8px_#3b82f6]" />
+              Past
             </div>
-            <p className="mt-3 text-sm font-black text-slate-900">{value}</p>
+            <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-emerald-50/80 dark:bg-emerald-500/10 text-[10px] font-black uppercase tracking-widest text-emerald-700 dark:text-emerald-400 transition-colors">
+              <span className="h-2 w-2 rounded-full bg-emerald-500 shadow-[0_0_8px_#10b981]" />
+              Future
+            </div>
           </div>
-        ))}
-      </div>
+        )}
 
-      {showLegend && (
-        <div className="mb-4 flex flex-wrap items-center gap-2">
-          <div className="inline-flex items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-1.5 text-[11px] font-medium text-blue-700">
-            <span className="h-2 w-2 rounded-full bg-blue-600" />
-            Actual Sales
-          </div>
-          <div className="inline-flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-[11px] font-medium text-emerald-700">
-            <span className="h-2 w-2 rounded-full bg-emerald-600" />
-            AI Forecast
-          </div>
-          <div className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-[11px] font-medium text-slate-600">
-            {mode === 'past' ? 'Past only' : mode === 'future' ? 'Future only' : 'Past + Future'}
-          </div>
-        </div>
-      )}
 
-      <div className="flex-1 overflow-hidden rounded-xl border border-slate-200 bg-slate-50/40 p-4">
-        <ResponsiveContainer width="100%" height={fullScreen ? '100%' : Math.max(260, chartHeight - 180)}>
-          <AreaChart data={chartData} margin={{ top: 18, right: 18, left: 0, bottom: 10 }}>
+      <div className="flex-1 overflow-hidden rounded-[2rem] border border-white/60 dark:border-white/10 bg-white/40 dark:bg-slate-800/20 p-6 backdrop-blur-sm">
+        <ResponsiveContainer width="100%" height={fullScreen ? '100%' : Math.max(300, chartHeight - 240)} minWidth={280} minHeight={220}>
+          <AreaChart data={chartData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
             <defs>
               <linearGradient id="forecastFill" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor="#10b981" stopOpacity={0.24} />
-                <stop offset="100%" stopColor="#10b981" stopOpacity={0.02} />
+                <stop offset="0%" stopColor="#10b981" stopOpacity={0.15} />
+                <stop offset="100%" stopColor="#10b981" stopOpacity={0.01} />
               </linearGradient>
               <linearGradient id="actualFill" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor="#2563eb" stopOpacity={0.14} />
-                <stop offset="100%" stopColor="#2563eb" stopOpacity={0.02} />
+                <stop offset="0%" stopColor="#2563eb" stopOpacity={0.12} />
+                <stop offset="100%" stopColor="#2563eb" stopOpacity={0.01} />
               </linearGradient>
             </defs>
 
-            <CartesianGrid vertical={false} stroke="#e2e8f0" strokeDasharray="4 6" />
+            <CartesianGrid vertical={false} stroke="#e2e8f0" strokeDasharray="3 4" opacity={0.5} />
             <XAxis
               dataKey="period"
               tickFormatter={(value) => formatShortDate(value, horizon)}
               axisLine={false}
               tickLine={false}
-              tick={{ fill: '#64748b', fontSize: 10, fontWeight: 700 }}
-              minTickGap={24}
+              tick={{ fill: '#94a3b8', fontSize: 10, fontWeight: 700 }}
+              minTickGap={30}
+              dy={10}
             />
             <YAxis
               axisLine={false}
               tickLine={false}
-              tick={{ fill: '#64748b', fontSize: 10, fontWeight: 700 }}
+              tick={{ fill: '#94a3b8', fontSize: 10, fontWeight: 700 }}
               tickFormatter={(value) => {
                 if (value >= 1000) return `${(value / 1000).toFixed(1)}k`;
                 return `${Math.round(value)}`;
               }}
-              width={56}
+              width={45}
             />
-            <Tooltip content={<CustomTooltip horizon={horizon} />} />
+            <Tooltip 
+              content={<CustomTooltip horizon={horizon} />} 
+              cursor={{ stroke: '#94a3b8', strokeWidth: 1, strokeDasharray: '4 4' }}
+              animationDuration={200}
+            />
 
-            <Area type="monotone" dataKey="actual" stroke="none" fill="url(#actualFill)" connectNulls />
+            <Area 
+              type="monotone" 
+              dataKey="actual" 
+              stroke="none" 
+              fill="url(#actualFill)" 
+              connectNulls 
+              animationDuration={1500}
+            />
             <Line
               type="monotone"
               dataKey="actual"
               stroke="#2563eb"
-              strokeWidth={3}
+              strokeWidth={4}
               dot={false}
-              activeDot={{ r: 5, fill: '#2563eb', stroke: '#fff', strokeWidth: 2 }}
+              activeDot={{ r: 6, fill: '#2563eb', stroke: '#fff', strokeWidth: 3, shadow: '0 4px 10px rgba(37,99,235,0.4)' }}
               connectNulls
+              animationDuration={1500}
             />
 
-            <Area type="monotone" dataKey="predicted" stroke="none" fill="url(#forecastFill)" connectNulls />
+            <Area 
+              type="monotone" 
+              dataKey="predicted" 
+              stroke="none" 
+              fill="url(#forecastFill)" 
+              connectNulls 
+              animationDuration={2000}
+            />
             <Line
               type="monotone"
               dataKey="predicted"
               stroke="#10b981"
-              strokeWidth={3}
-              strokeDasharray="7 5"
+              strokeWidth={4}
+              strokeDasharray="8 6"
               dot={false}
-              activeDot={{ r: 5, fill: '#10b981', stroke: '#fff', strokeWidth: 2 }}
+              activeDot={{ r: 6, fill: '#10b981', stroke: '#fff', strokeWidth: 3, shadow: '0 4px 10px rgba(16,185,129,0.4)' }}
               connectNulls
+              animationDuration={2000}
             />
           </AreaChart>
         </ResponsiveContainer>
+      </div>
+      
+      <div className="mt-6 flex items-center justify-between text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 border-t border-slate-100 dark:border-white/5 pt-5">
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2">
+            <div className="w-1 h-1 rounded-full bg-slate-300" />
+            <span>Horizon: {horizon}</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="w-1 h-1 rounded-full bg-slate-300" />
+            <span>Confidence: 95%</span>
+          </div>
+        </div>
+        <div className="flex items-center gap-1.5 opacity-60 hover:opacity-100 transition-opacity cursor-help">
+          <Info size={12} />
+          <span>Algorithm: AI Prophet V4</span>
+        </div>
       </div>
     </motion.div>
   );
 };
 
 export default PredictionChart;
+

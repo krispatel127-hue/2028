@@ -8,7 +8,7 @@ import { useAnalysis } from '../context/useAnalysis';
 const Navbar = () => {
   const { theme, toggleTheme } = useTheme();
   const location = useLocation();
-  const { syncState } = useAnalysis();
+  const { syncState, analysis, selectedUploadId } = useAnalysis();
 
   const getPageContext = () => {
     const path = location.pathname;
@@ -98,6 +98,15 @@ const Navbar = () => {
         ? `${syncPct}%`
         : 'Booting';
   const aiConnected = syncState?.status === 'CONNECTED' && syncPct >= 30;
+  const hasLocalData = !!analysis;
+  const isPinned = !!selectedUploadId;
+
+  const getAiStatusText = () => {
+    if (aiConnected) return 'AI is Connected';
+    if (isPinned) return 'Reference Locked';
+    if (hasLocalData) return 'Displaying Cached';
+    return 'AI Offline';
+  };
 
   return (
     <header className="navbar relative px-8 flex items-center justify-between border-b border-[var(--border-subtle)] bg-[var(--bg-sidebar)]">
@@ -142,7 +151,7 @@ const Navbar = () => {
            <span className={`text-[10px] font-black uppercase tracking-widest ${
              aiConnected ? 'text-emerald-500/80' : 'text-slate-500'
            }`}>
-             {aiConnected ? 'AI is Connected' : 'AI Offline'}
+             {getAiStatusText()}
            </span>
         </div>
 

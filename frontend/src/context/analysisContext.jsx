@@ -340,14 +340,9 @@ const normalizeAnalysisPayload = (payload) => {
       total_sales: payload.sales_summary?.total_sales ?? inventorySummary.total_sales,
       trend: payload.sales_summary?.trend || payload.forecast_summary?.daily_pattern || 'Stable',
     },
-    summary: (payloadSummary && (
-      hasAnyRiskKeys(payloadSummary, ['out_of_stock', 'low_stock', 'deadstock', 'overstock', 'healthy'])
-      || hasSignal(payloadSummary, ['out_of_stock', 'low_stock', 'deadstock', 'overstock', 'healthy'])
-    ))
-      ? payloadSummary
-      : {
-        ...inventoryModel.summary,
-      },
+    summary: (inventoryModel.summary && hasSignal(inventoryModel.summary, ['out_of_stock', 'low_stock', 'healthy']))
+      ? inventoryModel.summary
+      : (payloadSummary || inventoryModel.summary),
     recommendations,
     past_sales_daily: Array.isArray(payload.past_sales_daily) ? payload.past_sales_daily : [],
     past_sales_weekly: Array.isArray(payload.past_sales_weekly) ? payload.past_sales_weekly : [],
@@ -405,7 +400,7 @@ export const AnalysisProvider = ({ children }) => {
   const latestMetaRef = useRef({ uploadId: null, status: null });
   const analysisRef = useRef(null);
   const analysisKeyRef = useRef('');
-  const manualLockUntilRef = useRef(0);
+  const manualLockUntilRef = useRef(Number(localStorage.getItem('ai-ops-manual-lock-until') || 0));
 
   const setAnalysis = (value) => {
     if (!value) {
@@ -428,7 +423,14 @@ export const AnalysisProvider = ({ children }) => {
       || (normalized?.demand_forecast && normalized.demand_forecast.length)
     );
     if (hasManualPayload) {
-      manualLockUntilRef.current = Date.now() + (10 * 60 * 1000);
+      const lockDuration = 10 * 60 * 1000;
+      const until = Date.now() + lockDuration;
+      manualLockUntilRef.current = until;
+      try {
+        localStorage.setItem('ai-ops-manual-lock-until', String(until));
+      } catch {
+        // no-op
+      }
     }
     analysisRef.current = normalized;
     analysisKeyRef.current = `manual:${normalized?.analysis_isolation?.session_id || 'coo'}:${normalized?.confidence_score ?? 'na'}:${Date.now()}`;
@@ -495,13 +497,16 @@ export const AnalysisProvider = ({ children }) => {
         );
 
         if (!lockActive && !hasStickyAnalysis && nextId && nextId !== latestMetaRef.current.uploadId) {
-          analysisRef.current = null;
-          analysisKeyRef.current = '';
-          setAnalysisState(null);
-          try {
-            localStorage.removeItem(LAST_ANALYSIS_STORAGE_KEY);
-          } catch {
-            // no-op
+          // Master Rule: Do NOT clear if we have a valid pinned analysis.
+          if (!selectedUploadId) {
+            analysisRef.current = null;
+            analysisKeyRef.current = '';
+            setAnalysisState(null);
+            try {
+              localStorage.removeItem(LAST_ANALYSIS_STORAGE_KEY);
+            } catch {
+              // no-op
+            }
           }
         }
 
@@ -638,8 +643,9 @@ export const AnalysisProvider = ({ children }) => {
     selectedUploadId,
     pinUploadAnalysis,
     clearPinnedUploadAnalysis,
+    isLocked: Date.now() < (manualLockUntilRef.current || 0),
     syncState,
-  }), [analysis, latestMeta, selectedUploadId]);
+  }), [analysis, latestMeta, selectedUploadId, syncState]);
 
   return (
     <AnalysisContext.Provider value={value}>

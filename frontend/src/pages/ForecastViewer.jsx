@@ -35,6 +35,7 @@ import {
   BarChart,
   Bar,
   XAxis,
+  YAxis,
   CartesianGrid,
   Tooltip,
   Cell,
@@ -44,336 +45,13 @@ import api from '../api/client';
 import { useAnalysis } from '../context/useAnalysis';
 
 // â”€â”€â”€ Status config for forecast items â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-const FORECAST_STATUS = {
-  HIGH_DEMAND: {
-    label: 'High Demand',
-    description: 'This product is forecasted to have strong sales this period.',
-    badge: 'High Demand',
-    badgeColor: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-400',
-    border: 'border-emerald-200 dark:border-emerald-500/30',
-    bg: 'bg-emerald-50 dark:bg-emerald-500/5',
-    accent: 'bg-emerald-500',
-    text: 'text-emerald-600 dark:text-emerald-400',
-    icon: TrendingUp,
-    dotColor: 'bg-emerald-500',
-  },
-  MODERATE: {
-    label: 'Moderate Demand',
-    description: 'Steady demand expected with minor fluctuations.',
-    badge: 'Moderate',
-    badgeColor: 'bg-blue-100 text-blue-700 dark:bg-blue-500/20 dark:text-blue-400',
-    border: 'border-blue-200 dark:border-blue-500/30',
-    bg: 'bg-blue-50 dark:bg-blue-500/5',
-    accent: 'bg-blue-500',
-    text: 'text-blue-600 dark:text-blue-400',
-    icon: SlidersHorizontal,
-    dotColor: 'bg-blue-500',
-  },
-  LOW_DEMAND: {
-    label: 'Low Demand',
-    description: 'Sales forecast below average â€” consider reducing stock.',
-    badge: 'Low Demand',
-    badgeColor: 'bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-400',
-    border: 'border-amber-200 dark:border-amber-500/30',
-    bg: 'bg-amber-50 dark:bg-amber-500/5',
-    accent: 'bg-amber-400',
-    text: 'text-amber-600 dark:text-amber-400',
-    icon: TrendingDown,
-    dotColor: 'bg-amber-400',
-  },
-  CRITICAL: {
-    label: 'Critical Low',
-    description: 'Forecast shows near-zero demand â€” review stocking plan.',
-    badge: 'Critical',
-    badgeColor: 'bg-red-100 text-red-700 dark:bg-red-500/20 dark:text-red-400',
-    border: 'border-red-200 dark:border-red-500/30',
-    bg: 'bg-red-50 dark:bg-red-500/5',
-    accent: 'bg-red-500',
-    text: 'text-red-600 dark:text-red-400',
-    icon: AlertTriangle,
-    dotColor: 'bg-red-500',
-  },
-  NEW_ITEM: {
-    label: 'New Item',
-    description: 'First forecast cycle â€” limited historical data available.',
-    badge: 'New',
-    badgeColor: 'bg-purple-100 text-purple-700 dark:bg-purple-500/20 dark:text-purple-400',
-    border: 'border-purple-200 dark:border-purple-500/30',
-    bg: 'bg-purple-50 dark:bg-purple-500/5',
-    accent: 'bg-purple-500',
-    text: 'text-purple-600 dark:text-purple-400',
-    icon: Star,
-    dotColor: 'bg-purple-500',
-  },
-};
 
-const DEFAULT_FORECAST_STATUS = {
-  label: 'Analyzing',
-  description: 'Forecast being computedâ€¦',
-  badge: 'Pending',
-  badgeColor: 'bg-slate-100 text-slate-600',
-  border: 'border-slate-200 dark:border-white/10',
-  bg: 'bg-slate-50 dark:bg-white/5',
-  accent: 'bg-slate-400',
-  text: 'text-slate-500',
-  icon: Clock,
-  dotColor: 'bg-slate-400',
-};
-
-const getForecastStatus = (product) => {
-  const total = (product.weeks || []).reduce((s, w) => s + Number(w.demand || 0), 0);
-  const avg = total / Math.max(1, (product.weeks || []).length);
-  if (avg === 0) return FORECAST_STATUS.CRITICAL;
-  if (avg < 20) return FORECAST_STATUS.LOW_DEMAND;
-  if (avg < 60) return FORECAST_STATUS.MODERATE;
-  return FORECAST_STATUS.HIGH_DEMAND;
-};
-
-// â”€â”€â”€ Tabs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-const TABS = [
-  { id: 'ALL', label: 'All Products', icon: Package },
-  { id: 'HIGH_DEMAND', label: 'High Demand', icon: TrendingUp },
-  { id: 'MODERATE', label: 'Moderate', icon: SlidersHorizontal },
-  { id: 'LOW_DEMAND', label: 'Low Demand', icon: TrendingDown },
-];
-
-const getTabCount = (products, tabId) => {
-  if (tabId === 'ALL') return products.length;
-  return products.filter((p) => getForecastStatus(p).label === FORECAST_STATUS[tabId]?.label).length;
-};
-
-const getFilteredProducts = (products, tabId) => {
-  if (tabId === 'ALL') return products;
-  return products.filter((p) => getForecastStatus(p).label === FORECAST_STATUS[tabId]?.label);
-};
 
 // â”€â”€â”€ Search bar â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-const SEARCH_FIELD_OPTIONS = [
-  { value: 'all', label: 'All Fields', icon: Search },
-  { value: 'name', label: 'Product Name', icon: Package },
-  { value: 'sku', label: 'SKU', icon: Tag },
-];
 
-const matchesProductSearch = (product, term, field) => {
-  if (!term) return true;
-  const q = term.toLowerCase();
-  if (field === 'name') return (product.name || '').toLowerCase().includes(q);
-  if (field === 'sku') return (product.sku || '').toLowerCase().includes(q);
-  return (product.name || '').toLowerCase().includes(q) || (product.sku || '').toLowerCase().includes(q);
-};
-
-const SearchBar = ({ value, onChange, field, onFieldChange, totalCount, matchCount }) => {
-  const [open, setOpen] = useState(false);
-  const ref = useRef(null);
-
-  useEffect(() => {
-    const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, []);
-
-  const selected = SEARCH_FIELD_OPTIONS.find((o) => o.value === field) || SEARCH_FIELD_OPTIONS[0];
-  const FieldIcon = selected.icon;
-
-  return (
-    <div ref={ref} className="relative w-full">
-      <div className={`flex items-center bg-white dark:bg-slate-900 border-2 rounded-2xl overflow-hidden shadow-lg transition-all duration-300
-        ${value ? 'border-emerald-400 dark:border-emerald-500/60 shadow-emerald-100/60 dark:shadow-emerald-500/10' : 'border-slate-200 dark:border-white/10 hover:border-slate-300 dark:hover:border-white/20'}`}>
-
-        <button
-          onClick={() => setOpen(!open)}
-          className="flex items-center gap-2 pl-4 pr-3 py-3.5 border-r border-slate-100 dark:border-white/10 bg-slate-50 dark:bg-white/5 hover:bg-slate-100 dark:hover:bg-white/10 transition-colors text-slate-600 dark:text-slate-300 shrink-0"
-        >
-          <FieldIcon size={14} className="text-emerald-500" />
-          <span className="text-xs font-bold text-slate-700 dark:text-slate-200 hidden sm:block whitespace-nowrap">{selected.label}</span>
-          <ChevronDown size={12} className={`transition-transform duration-200 text-slate-400 ${open ? 'rotate-180' : ''}`} />
-        </button>
-
-        <div className="flex-1 flex items-center gap-2 px-4">
-          <Search size={15} className="text-slate-400 shrink-0" />
-          <input
-            type="text"
-            value={value}
-            onChange={(e) => onChange(e.target.value)}
-            placeholder={`Search by ${selected.label.toLowerCase()}â€¦`}
-            className="flex-1 py-3.5 text-sm font-medium text-slate-900 dark:text-white placeholder:text-slate-400 bg-transparent outline-none min-w-0"
-          />
-        </div>
-
-        <div className="flex items-center gap-2 pr-4">
-          {value && (
-            <span className="text-xs font-bold text-slate-400 whitespace-nowrap hidden sm:block">
-              {matchCount} found
-            </span>
-          )}
-          {value ? (
-            <button
-              onClick={() => onChange('')}
-              className="w-7 h-7 rounded-lg bg-slate-100 dark:bg-white/10 hover:bg-emerald-50 dark:hover:bg-emerald-500/20 flex items-center justify-center text-slate-400 hover:text-emerald-500 transition-all"
-            >
-              <X size={13} />
-            </button>
-          ) : (
-            <span className="text-xs text-slate-300 dark:text-slate-600 font-medium hidden sm:block">{totalCount} total</span>
-          )}
-        </div>
-      </div>
-
-      <AnimatePresence>
-        {open && (
-          <motion.div
-            initial={{ opacity: 0, y: -8, scale: 0.97 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: -8, scale: 0.97 }}
-            transition={{ duration: 0.15 }}
-            className="absolute top-full left-0 mt-2 w-56 bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/10 rounded-2xl shadow-2xl z-50 overflow-hidden"
-          >
-            <div className="p-2">
-              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-3 py-2">Search by field</p>
-              {SEARCH_FIELD_OPTIONS.map((opt) => {
-                const Ic = opt.icon;
-                const isActive = opt.value === field;
-                return (
-                  <button
-                    key={opt.value}
-                    onClick={() => { onFieldChange(opt.value); setOpen(false); }}
-                    className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all
-                      ${isActive
-                        ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
-                        : 'text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-white/5'}`}
-                  >
-                    <Ic size={14} className={isActive ? 'text-emerald-500' : 'text-slate-400'} />
-                    {opt.label}
-                    {isActive && <CheckCircle2 size={14} className="ml-auto text-emerald-500" />}
-                  </button>
-                );
-              })}
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-    </div>
-  );
-};
 
 // â”€â”€â”€ Mini bar chart inside card â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-const MiniChart = ({ weeks, active }) => {
-  const max = Math.max(...weeks.map((w) => w.demand || 1), 1);
-  return (
-    <div className="flex items-end gap-1.5 h-12 pt-3 relative group">
-      <div className="absolute inset-0 bg-gradient-to-t from-emerald-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity rounded-xl" />
-      {weeks.map((w, i) => {
-        const h = (w.demand / max) * 100;
-        return (
-          <div key={i} className="flex-1 flex flex-col items-center gap-1 z-10">
-            <motion.div
-              initial={{ height: 0 }}
-              animate={{ height: `${Math.max(10, h)}%` }}
-              className={`w-full rounded-t-md transition-all duration-500 ${active
-                ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.35)]'
-                : 'bg-slate-200 dark:bg-slate-700 group-hover:bg-slate-300 dark:group-hover:bg-slate-600'
-                }`}
-            />
-          </div>
-        );
-      })}
-    </div>
-  );
-};
 
-// â”€â”€â”€ Forecast Product Card â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-const ForecastCard = React.forwardRef(({ product, index, onViewDetail }, ref) => {
-  const cfg = getForecastStatus(product);
-  const StatusIcon = cfg.icon;
-  const totalDemand = (product.weeks || []).reduce((s, w) => s + Number(w.demand || 0), 0);
-
-  return (
-    <motion.div
-      ref={ref}
-      initial={{ opacity: 0, y: 20 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ delay: index * 0.04, duration: 0.4 }}
-      className={`relative bg-white dark:bg-slate-900 rounded-3xl border ${cfg.border} hover:shadow-xl hover:-translate-y-1 transition-all duration-400 group overflow-hidden flex flex-col`}
-    >
-      {/* Top accent stripe */}
-      <div className={`h-1 w-full ${cfg.accent}`} />
-
-      <div className="p-6 flex flex-col flex-1">
-        {/* Header row */}
-        <div className="flex items-start justify-between gap-4 mb-5">
-          <div className="flex items-center gap-3 min-w-0">
-            <div className={`w-12 h-12 rounded-2xl ${cfg.bg} border ${cfg.border} flex items-center justify-center shrink-0`}>
-              <Package size={24} className={cfg.text} strokeWidth={1.5} />
-            </div>
-            <div className="min-w-0">
-              <h4 className="text-base font-black text-slate-900 dark:text-white truncate leading-tight group-hover:text-emerald-500 transition-colors">
-                {product.name || 'Unknown Product'}
-              </h4>
-              {product.sku && (
-                <p className="text-[11px] text-slate-400 font-medium mt-0.5">SKU: {product.sku}</p>
-              )}
-            </div>
-          </div>
-
-          {/* Status badge */}
-          <span className={`shrink-0 text-[10px] font-black px-2.5 py-1 rounded-full uppercase tracking-wide ${cfg.badgeColor}`}>
-            {cfg.badge}
-          </span>
-        </div>
-
-        {/* Status reason box */}
-        <div className={`mb-5 px-4 py-3 rounded-2xl ${cfg.bg} border ${cfg.border} flex items-start gap-3`}>
-          <StatusIcon size={15} className={`${cfg.text} mt-0.5 shrink-0`} />
-          <div>
-            <p className={`text-[11px] font-black uppercase tracking-wide ${cfg.text} mb-0.5`}>{cfg.label}</p>
-            <p className="text-[12px] text-slate-600 dark:text-slate-300 font-medium leading-snug">
-              {cfg.description}
-            </p>
-            <p className="text-[10px] text-slate-400 mt-1.5 flex items-center gap-1">
-              <Calendar size={10} /> Total forecast: {totalDemand} units across {(product.weeks || []).length} weeks
-            </p>
-          </div>
-        </div>
-
-        {/* Mini chart */}
-        <div className="mb-5">
-          <p className="text-[9px] font-black uppercase tracking-widest text-slate-400 mb-2">Weekly Demand Forecast</p>
-          <MiniChart weeks={product.weeks || []} active={false} />
-        </div>
-
-        {/* Stats row */}
-        <div className="space-y-3 mb-5 flex-1">
-          {[
-            { icon: BarChart3, label: 'Forecast Score', value: `${(product.confidence ?? product.score ?? 0).toFixed(0)}%`, hoverColor: 'group-hover/row:text-emerald-500' },
-            { icon: TrendingUp, label: 'Avg Weekly Demand', value: `${Math.round(totalDemand / Math.max(1, (product.weeks || []).length))} units`, hoverColor: 'group-hover/row:text-indigo-500' },
-            { icon: Activity, label: 'Peak Week Demand', value: `${Math.max(...(product.weeks || []).map(w => w.demand || 0), 0)} units`, hoverColor: 'group-hover/row:text-rose-500', truncate: true },
-          ].map(({ icon: Icon, label, value, hoverColor, truncate }) => (
-            <div key={label} className="group/row flex items-center gap-3">
-              <div className="w-8 h-8 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-100 dark:border-white/5 flex items-center justify-center shrink-0">
-                <Icon size={13} className={`text-slate-400 ${hoverColor} transition-colors`} />
-              </div>
-              <div className="flex-1 min-w-0">
-                <p className="text-[9px] font-black uppercase tracking-widest text-slate-400">{label}</p>
-                <p className={`text-[12px] text-slate-700 dark:text-slate-300 font-semibold ${truncate ? 'truncate' : ''}`}>{value}</p>
-              </div>
-            </div>
-          ))}
-        </div>
-
-        {/* Action button */}
-        <button
-          onClick={() => onViewDetail(product)}
-          className={`mt-auto w-full py-3 rounded-2xl ${cfg.bg} border ${cfg.border} flex items-center justify-center gap-2 hover:scale-[1.02] active:scale-[0.98] transition-all group/btn`}
-        >
-          <span className={`text-[11px] font-black uppercase tracking-widest ${cfg.text}`}>
-            View Detail
-          </span>
-          <ArrowRight size={14} className={`${cfg.text} group-hover/btn:translate-x-1.5 transition-transform duration-300`} />
-        </button>
-      </div>
-    </motion.div>
-  );
-});
 
 // â”€â”€â”€ Normalization utils â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const normalizeActualRows = (rows = []) =>
@@ -1182,15 +860,11 @@ const ForecastViewer = () => {
   const [selectedDay, setSelectedDay] = useState(() => toInputDay(new Date()));
   const [selectedMonth, setSelectedMonth] = useState(() => toInputMonth(new Date()));
   const [selectedYear, setSelectedYear] = useState(() => String(new Date().getFullYear()));
-  const [activeFilter, setActiveFilter] = useState('ALL');
-  const [searchTerm, setSearchTerm] = useState('');
-  const [searchField, setSearchField] = useState('all');
   const [historySearchTerm, setHistorySearchTerm] = useState('');
-  const [showDetail, setShowDetail] = useState(false);
-  const [selectedProduct, setSelectedProduct] = useState(null);
-  const [detailViewMode, setDetailViewMode] = useState('cards');
   const [showTrends, setShowTrends] = useState(false);
   const [showAllTrends, setShowAllTrends] = useState(false);
+  const [selectedHistoryProduct, setSelectedHistoryProduct] = useState(null);
+  const [showProductHistory, setShowProductHistory] = useState(false);
   const [trendTimeGranularity, setTrendTimeGranularity] = useState('day');
   const [trendSelectedDay, setTrendSelectedDay] = useState(() => toInputDay(new Date()));
   const [trendSelectedMonth, setTrendSelectedMonth] = useState(() => toInputMonth(new Date()));
@@ -1308,6 +982,22 @@ const ForecastViewer = () => {
     () => buildHistoryRowsFromAnalysis(historySourcePayload || analysisPayload || {}),
     [historySourcePayload, analysisPayload]
   );
+
+  const productSpecificHistory = useMemo(() => {
+    if (!selectedHistoryProduct) return [];
+    const normalizedSelected = String(selectedHistoryProduct).toLowerCase();
+    return historyRows.filter(row => 
+      String(row.stockName || '').toLowerCase() === normalizedSelected
+    );
+  }, [historyRows, selectedHistoryProduct]);
+
+  const selectedProductMeta = useMemo(() => {
+    if (!selectedHistoryProduct) return null;
+    const normalizedSelected = String(selectedHistoryProduct).toLowerCase();
+    return forecasts.find(p => 
+      String(p.name || p.sku || '').toLowerCase() === normalizedSelected
+    );
+  }, [forecasts, selectedHistoryProduct]);
 
   const dayTimelineRows = useMemo(
     () => buildDayTimelineRowsFromAnalysis(historySourcePayload || analysisPayload || {}, selectedDay),
@@ -1449,18 +1139,37 @@ const ForecastViewer = () => {
     const query = cleanTextValue(historySearchTerm).toLowerCase();
     if (!query) return scopedRows;
 
-    return scopedRows.filter((row) => (
-      String(row?.customerName || '').toLowerCase().includes(query)
-      || String(row?.stockName || '').toLowerCase().includes(query)
-      || String(row?.orderId || '').toLowerCase().includes(query)
-      || String(row?.paymentStatus || '').toLowerCase().includes(query)
-    ));
+    return scopedRows.filter((row) => {
+      const matchText = [
+        row.customerName,
+        row.customerId,
+        row.stockName,
+        row.orderId,
+      ].join(' ').toLowerCase();
+      return matchText.includes(query);
+    });
   }, [historyRows, timeGranularity, selectedDay, selectedMonth, selectedYear, historySearchTerm]);
 
   const historySummary = useMemo(
     () => summarizeHistoryRows(filteredHistoryRows),
     [filteredHistoryRows]
   );
+  const globalHistorySummary = useMemo(() => summarizeHistoryRows(historyRows), [historyRows]);
+
+  const forecastStats = useMemo(() => {
+    const historical = displayPastData.filter(r => r.actual != null);
+    const forecast = displayForecastData.filter(r => r.predicted != null);
+
+    const latestSales = historical.length > 0 ? historical[historical.length - 1].actual : 0;
+    const avgForecast = forecast.length > 0 
+      ? Math.round(forecast.reduce((sum, r) => sum + (r.predicted || 0), 0) / forecast.length)
+      : 0;
+    const peakForecast = forecast.length > 0
+      ? Math.max(...forecast.map(r => r.predicted || 0))
+      : 0;
+
+    return { latestSales, avgForecast, peakForecast };
+  }, [displayPastData, displayForecastData]);
 
   const topHistoryCustomers = useMemo(() => {
     const byCustomer = new Map();
@@ -1625,16 +1334,7 @@ const ForecastViewer = () => {
     return new Intl.NumberFormat('en-US').format(Math.round(numeric));
   };
 
-  const tabCounts = useMemo(() => {
-    const counts = {};
-    TABS.forEach((t) => { counts[t.id] = getTabCount(forecasts, t.id); });
-    return counts;
-  }, [forecasts]);
 
-  const displayProducts = useMemo(() => {
-    return getFilteredProducts(forecasts, activeFilter)
-      .filter((p) => matchesProductSearch(p, searchTerm, searchField));
-  }, [forecasts, activeFilter, searchTerm, searchField]);
 
   useEffect(() => { fetchInitialData(); }, [selectedUploadId, liveAnalysis]);
 
@@ -1716,9 +1416,69 @@ const ForecastViewer = () => {
   return (
     <div className="space-y-6 pb-20">
 
+      {/* ── Consolidated Global Metrics ── */}
+      <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+        {[
+          {
+            label: 'Customers',
+            value: globalHistorySummary.customerCount,
+            hint: `Across ${globalHistorySummary.stockCount} items`,
+            icon: Users,
+            tone: 'from-sky-500 to-blue-600',
+          },
+          {
+            label: 'Total Sales',
+            value: formatUnits(globalHistorySummary.quantity),
+            hint: `From ${historyRows.length} orders`,
+            icon: Box,
+            tone: 'from-violet-500 to-purple-600',
+          },
+          {
+            label: 'Revenue',
+            value: formatCompactCurrency(globalHistorySummary.totalAmount),
+            hint: 'Lifetime total',
+            icon: CircleDollarSign,
+            tone: 'from-emerald-500 to-teal-600',
+          },
+          {
+            label: 'Current Stock',
+            value: formatUnits(forecasts.reduce((sum, p) => sum + (p.current_stock || p.stock || 0), 0)),
+            hint: 'Units in hand',
+            icon: ShieldCheck,
+            tone: 'from-blue-600 to-indigo-700',
+          },
+          {
+            label: 'AI Predicted',
+            value: formatUnits(forecastStats.avgForecast),
+            hint: 'Next month estimate',
+            icon: TrendingUp,
+            tone: 'from-emerald-600 to-teal-700',
+          },
+        ].map((card) => {
+          const Icon = card.icon;
+          return (
+            <motion.div 
+              key={card.label} 
+              whileHover={{ y: -4, scale: 1.02 }}
+              className="group relative overflow-hidden rounded-[1.5rem] border border-white/60 bg-white/70 dark:bg-slate-900/40 px-5 py-5 shadow-sm backdrop-blur-md transition-all hover:shadow-xl"
+            >
+              <div className={`absolute top-0 right-0 w-20 h-20 -mr-8 -mt-8 rounded-full bg-gradient-to-br ${card.tone} opacity-[0.03] group-hover:opacity-[0.08] transition-opacity`} />
+              <div className="flex items-start justify-between gap-3 relative z-10">
+                <div className="flex-1 min-w-0">
+                  <p className="text-[10px] font-black uppercase tracking-[0.15em] text-slate-400 group-hover:text-slate-500 transition-colors">{card.label}</p>
+                  <h4 className="mt-1 text-xl font-black text-slate-900 dark:text-white tracking-tight leading-tight">{card.value}</h4>
+                  <p className="mt-1 text-[11px] font-bold text-slate-500 dark:text-slate-400 line-clamp-1">{card.hint}</p>
+                </div>
+                <div className={`flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br ${card.tone} text-white shadow-lg shadow-black/5`}>
+                  <Icon size={18} strokeWidth={2.5} />
+                </div>
+              </div>
+            </motion.div>
+          );
+        })}
+      </div>
 
-
-      {/* â”€â”€ Main Card â”€â”€ */}
+      {/* ── Main Card ── */}
       <GlassCard className="!p-0 !border-slate-200/60 dark:!border-white/10 !bg-white dark:!bg-slate-900/40 overflow-visible shadow-xl">
 
 
@@ -1729,10 +1489,10 @@ const ForecastViewer = () => {
           </div>
           <div className="flex-1">
             <span className="text-[12px] font-semibold text-slate-700">
-              Forecast engine is active
+              AI Analysis Active
             </span>
             <span className="text-[11px] text-slate-500 ml-2">
-              Live analysis based on uploaded sales history
+              Live insights from your sales data
             </span>
           </div>
           <div className="flex items-center gap-1.5">
@@ -1746,70 +1506,16 @@ const ForecastViewer = () => {
           <div className="mb-4">
             <div>
               <h3 className="text-[20px] font-semibold text-slate-900 dark:text-white leading-none mb-1">
-                Sales Forecast
+                Demand Insights
               </h3>
               <p className="text-[13px] text-slate-500 dark:text-slate-400">
-                Past and future demand view
+                Sales history & predictions
               </p>
-
-              <div className="mt-5 grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-5">
-                {[
-                  {
-                    label: 'Customers',
-                    value: historySummary.customerCount,
-                    hint: `${historySummary.stockCount} stocks in selected window`,
-                    icon: Users,
-                    tone: 'text-sky-600 bg-sky-50 border-sky-200',
-                  },
-                  {
-                    label: 'Units Ordered',
-                    value: formatUnits(historySummary.quantity),
-                    hint: `${filteredHistoryRows.length} order rows`,
-                    icon: Box,
-                    tone: 'text-violet-600 bg-violet-50 border-violet-200',
-                  },
-                  {
-                    label: 'Order Value',
-                    value: formatCompactCurrency(historySummary.totalAmount),
-                    hint: 'Total billed amount',
-                    icon: CircleDollarSign,
-                    tone: 'text-emerald-600 bg-emerald-50 border-emerald-200',
-                  },
-                  {
-                    label: 'Payment Received',
-                    value: formatCompactCurrency(historySummary.paidAmount),
-                    hint: `${historySummary.paidOrders} fully paid orders`,
-                    icon: CheckCircle2,
-                    tone: 'text-teal-600 bg-teal-50 border-teal-200',
-                  },
-                  {
-                    label: 'Pending Balance',
-                    value: formatCompactCurrency(historySummary.pendingAmount),
-                    hint: `${historySummary.partialOrders + historySummary.pendingOrders} orders need follow-up`,
-                    icon: Activity,
-                    tone: 'text-amber-700 bg-amber-50 border-amber-200',
-                  },
-                ].map((card) => {
-                  const Icon = card.icon;
-                  return (
-                    <div key={card.label} className="rounded-2xl border border-slate-200 bg-white px-4 py-4 shadow-sm">
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <p className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">{card.label}</p>
-                          <p className="mt-2 text-[20px] font-black tracking-tight text-slate-900">{card.value}</p>
-                          <p className="mt-1 text-[11px] font-semibold text-slate-500">{card.hint}</p>
-                        </div>
-                        <div className={`flex h-11 w-11 items-center justify-center rounded-2xl border ${card.tone}`}>
-                          <Icon size={18} />
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
             </div>
           </div>
-          <div className="flex flex-wrap items-center gap-2.5 rounded-2xl border border-slate-200 bg-slate-50/60 p-2.5 mb-4">
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2.5 rounded-2xl border border-slate-200 bg-slate-50/60 p-2.5 mb-4 px-6 mx-6">
             <div className="inline-flex items-center rounded-xl border border-slate-200 bg-white p-1">
               <button
                 onClick={() => setForecastMode('past')}
@@ -2013,8 +1719,6 @@ const ForecastViewer = () => {
             )}
           </div>
 
-        </div>
-
         {/* ── Product Cards Grid ── */}
         <div className="border-t border-slate-100 bg-gradient-to-b from-white to-slate-50/60 px-6 py-6">
 
@@ -2172,324 +1876,8 @@ const ForecastViewer = () => {
               </div>
             </div>
           )}
-
-
-        </div>
-
-        <div className="p-6 border-t border-slate-100 dark:border-white/10 mt-2">
-          <div className="flex items-center gap-2 mb-5">
-            <Box size={16} className="text-slate-500" />
-            <h4 className="text-sm font-black text-slate-700 dark:text-slate-300 uppercase tracking-wide">Product Forecasts</h4>
-          </div>
-          {displayProducts.length === 0 ? (
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              className="flex flex-col items-center justify-center py-24 border-2 border-dashed border-slate-200 dark:border-white/10 rounded-3xl bg-slate-50/50 dark:bg-white/[0.02]"
-            >
-              <div className="w-20 h-20 rounded-full bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/20 flex items-center justify-center mb-5 shadow-xl shadow-emerald-500/10">
-                <ShieldCheck size={36} className="text-emerald-500" />
-              </div>
-              <h3 className="text-lg font-black text-slate-900 dark:text-white mb-2">
-                {searchTerm ? 'No products match your search' : 'No products in this category'}
-              </h3>
-              <p className="text-sm text-slate-500 dark:text-slate-400 text-center max-w-xs leading-relaxed">
-                {searchTerm ? 'Try searching a different product name or SKU.' : 'No forecast data available for this filter.'}
-              </p>
-              {searchTerm && (
-                <button
-                  onClick={() => { setSearchTerm(''); setSearchField('all'); }}
-                  className="mt-4 px-5 py-2.5 rounded-xl bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-xs font-bold hover:bg-emerald-100 transition-colors"
-                >
-                  Clear search &amp; show all
-                </button>
-              )}
-            </motion.div>
-          ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-              <AnimatePresence mode="popLayout">
-                {displayProducts.map((product, index) => (
-                  <ForecastCard
-                    key={`${product.sku || product.name}-${index}`}
-                    product={product}
-                    index={index}
-                    onViewDetail={(p) => { setSelectedProduct(p); setDetailViewMode('cards'); setShowDetail(true); }}
-                  />
-                ))}
-              </AnimatePresence>
-            </div>
-          )}
         </div>
       </GlassCard>
-
-      {/* â”€â”€ Detail Modal â”€â”€ */}
-      <AnimatePresence>
-        {showDetail && selectedProduct && (
-          <motion.div
-            key="forecast-detail-modal"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 lg:p-6 bg-slate-950/55 backdrop-blur-sm"
-            onClick={() => setShowDetail(false)}
-          >
-            <motion.div
-              initial={{ opacity: 0, y: 12, scale: 0.98 }}
-              animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: 8, scale: 0.98 }}
-              transition={{ duration: 0.2 }}
-              className="relative h-[94vh] w-[min(97vw,1560px)] max-h-[94vh] overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-[0_30px_80px_rgba(15,23,42,0.24)]"
-              onClick={(e) => e.stopPropagation()}
-            >
-              {(() => {
-                const weeks = selectedProduct.weeks || [];
-                const totalDemand = weeks.reduce((sum, w) => sum + Number(w.demand || 0), 0);
-                const totalProduction = weeks.reduce((sum, w) => sum + Number(w.production || 0), 0);
-                const avgDemand = weeks.length ? totalDemand / weeks.length : 0;
-                const peakDemand = Math.max(...weeks.map((w) => Number(w.demand || 0)), 0);
-                const demandCoverage = totalDemand > 0
-                  ? Math.round((totalProduction / totalDemand) * 100)
-                  : 0;
-                const weekConfidences = weeks
-                  .map((w) => {
-                    if (w.confidence != null && Number.isFinite(Number(w.confidence))) {
-                      const explicit = Number(w.confidence);
-                      return explicit <= 1 ? explicit * 100 : explicit;
-                    }
-                    const low = Number(w.low ?? 0);
-                    const high = Number(w.high ?? 0);
-                    const demand = Math.max(1, Number(w.demand || 0));
-                    if (!Number.isFinite(low) || !Number.isFinite(high) || high <= low) return null;
-                    return Math.max(0, Math.min(100, Math.round(100 - ((high - low) / demand) * 100)));
-                  })
-                  .filter((val) => Number.isFinite(val));
-                const confidenceValue = weekConfidences.length
-                  ? Math.round(weekConfidences.reduce((sum, val) => sum + val, 0) / weekConfidences.length)
-                  : Math.max(0, Math.min(100, Math.round(Number(selectedProduct.confidence || 0))));
-                const hasExplicitProduction = weeks.some((w) => w.production != null && Number(w.production) > 0);
-
-                return (
-                  <>
-                    <div className="px-5 py-5 sm:px-8 sm:py-6 border-b border-slate-200 bg-gradient-to-br from-slate-50 via-white to-emerald-50/40">
-                      <div className="flex flex-wrap items-start justify-between gap-4">
-                        <div className="flex min-w-0 items-start gap-3">
-                          <div className="w-12 h-12 rounded-2xl bg-emerald-500/10 border border-emerald-200 flex items-center justify-center text-emerald-600">
-                            <BarChart3 size={21} />
-                          </div>
-                          <div className="min-w-0">
-                            <h3 className="truncate text-2xl font-black tracking-tight text-slate-900">{selectedProduct.name}</h3>
-                            <p className="text-slate-500 text-xs font-semibold mt-1">
-                              Analysis-backed weekly demand outlook with operational plan
-                            </p>
-                            <p className="text-[11px] text-slate-400 mt-2 font-semibold">
-                              {selectedProduct.sku ? `SKU: ${selectedProduct.sku} â€¢ ` : ''}{weeks.length} forecast windows
-                            </p>
-                          </div>
-                        </div>
-                        <div className="ml-auto flex items-center gap-2">
-                          <div className="inline-flex items-center rounded-xl border border-slate-200 bg-white p-1 shadow-sm">
-                            <button
-                              type="button"
-                              onClick={() => setDetailViewMode('cards')}
-                              className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-[11px] font-bold transition-colors ${detailViewMode === 'cards' ? 'bg-emerald-500 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
-                            >
-                              <Eye size={13} />
-                              Card View
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => setDetailViewMode('table')}
-                              className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-[11px] font-bold transition-colors ${detailViewMode === 'table' ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
-                            >
-                              <List size={13} />
-                              Table View
-                            </button>
-                          </div>
-                          <button
-                            className="p-2 rounded-xl border border-slate-200 bg-white text-slate-500 hover:text-slate-700 hover:bg-slate-50 transition-colors"
-                            onClick={() => setShowDetail(false)}
-                            aria-label="Close forecast detail"
-                          >
-                            <X size={16} />
-                          </button>
-                        </div>
-                      </div>
-
-                      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mt-5">
-                        <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
-                          <p className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">Total Demand</p>
-                          <p className="text-lg font-black text-slate-900 mt-1 tabular-nums">{formatUnits(totalDemand)} units</p>
-                        </div>
-                        <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
-                          <p className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">Avg Weekly Demand</p>
-                          <p className="text-lg font-black text-slate-900 mt-1 tabular-nums">{formatUnits(avgDemand)} units</p>
-                        </div>
-                        <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
-                          <p className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">Peak Weekly Demand</p>
-                          <p className="text-lg font-black text-slate-900 mt-1 tabular-nums">{formatUnits(peakDemand)} units</p>
-                        </div>
-                        <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
-                          <p className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">Forecast Confidence</p>
-                          <p className="text-lg font-black text-slate-900 mt-1 tabular-nums">{formatUnits(confidenceValue)}%</p>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="px-6 sm:px-8 py-5 border-b border-slate-200 bg-white">
-                      <div className="flex items-center justify-between gap-4 flex-wrap">
-                        <p className="text-[11px] font-black uppercase tracking-[0.16em] text-slate-500">Weekly Execution Plan</p>
-                        <div className="inline-flex items-center gap-2 text-xs font-semibold text-slate-600">
-                          <ShieldCheck size={14} className="text-emerald-500" />
-                          {hasExplicitProduction
-                            ? `Demand coverage: ${formatUnits(demandCoverage)}% of forecast`
-                            : 'Production recommendation not available in source analysis'}
-                        </div>
-                      </div>
-                    </div>
-
-                    {weeks.length === 0 ? (
-                      <div className="px-8 py-14 text-center">
-                        <p className="text-sm font-bold text-slate-700">No week-level forecast rows were found in the analysis payload.</p>
-                        <p className="text-xs text-slate-500 mt-2">Upload with demand_forecast rows to view this detail table.</p>
-                      </div>
-                    ) : detailViewMode === 'cards' ? (
-                      <div className="max-h-[calc(94vh-265px)] overflow-y-auto px-5 py-5 sm:px-8">
-                        <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-                          {weeks.map((w, i) => {
-                            const demand = Math.max(0, Number(w.demand || 0));
-                            const production = w.production != null && Number.isFinite(Number(w.production))
-                              ? Math.max(0, Number(w.production))
-                              : null;
-                            const low = Number(w.low ?? 0);
-                            const high = Number(w.high ?? 0);
-                            const conf = (() => {
-                              if (w.confidence != null && Number.isFinite(Number(w.confidence))) {
-                                const explicit = Number(w.confidence);
-                                const normalized = explicit <= 1 ? explicit * 100 : explicit;
-                                return Math.max(0, Math.min(100, Math.round(normalized)));
-                              }
-                              if (Number.isFinite(low) && Number.isFinite(high) && high > low) {
-                                return Math.max(0, Math.min(100, Math.round(100 - ((high - low) / Math.max(1, demand)) * 100)));
-                              }
-                              return null;
-                            })();
-
-                            return (
-                              <div key={`week-card-${i}`} className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
-                                <div className="flex items-center justify-between gap-3">
-                                  <div>
-                                    <p className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">Forecast Window</p>
-                                    <h4 className="mt-1 text-xl font-black text-slate-900">{w.date || `W+${i + 1}`}</h4>
-                                  </div>
-                                  <div className="rounded-full bg-emerald-50 px-3 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-emerald-600">
-                                    {conf == null ? 'Pending' : `${conf}% Confidence`}
-                                  </div>
-                                </div>
-
-                                <div className="mt-4 grid grid-cols-2 gap-3">
-                                  <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
-                                    <p className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-400">Expected Sales</p>
-                                    <p className="mt-1 text-lg font-black text-slate-900">{formatUnits(demand)} units</p>
-                                  </div>
-                                  <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
-                                    <p className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-400">Recommended Production</p>
-                                    <p className="mt-1 text-lg font-black text-slate-900">{production == null ? 'Not available' : `${formatUnits(production)} units`}</p>
-                                  </div>
-                                  <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
-                                    <p className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-400">Low Range</p>
-                                    <p className="mt-1 text-lg font-black text-slate-900">{(Number.isFinite(low) && low > 0) ? `${formatUnits(low)} units` : 'Not available'}</p>
-                                  </div>
-                                  <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
-                                    <p className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-400">High Range</p>
-                                    <p className="mt-1 text-lg font-black text-slate-900">{(Number.isFinite(high) && high > 0) ? `${formatUnits(high)} units` : 'Not available'}</p>
-                                  </div>
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="overflow-x-auto max-h-[calc(94vh-265px)]">
-                        <table className="w-full text-left border-collapse min-w-[860px]">
-                          <thead className="sticky top-0 z-10 bg-slate-50">
-                            <tr>
-                              <th className="px-6 py-4 text-[11px] font-black text-slate-500 uppercase tracking-[0.14em]">Week</th>
-                              <th className="px-6 py-4 text-[11px] font-black text-slate-500 uppercase tracking-[0.14em]">Expected Sales</th>
-                              <th className="px-6 py-4 text-[11px] font-black text-slate-500 uppercase tracking-[0.14em]">Recommended Production</th>
-                              <th className="px-6 py-4 text-[11px] font-black text-slate-500 uppercase tracking-[0.14em]">Confidence</th>
-                              <th className="px-6 py-4 text-[11px] font-black text-slate-500 uppercase tracking-[0.14em]">Range (Low - High)</th>
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y divide-slate-100">
-                            {weeks.map((w, i) => {
-                              const demand = Math.max(0, Number(w.demand || 0));
-                              const production = w.production != null && Number.isFinite(Number(w.production))
-                                ? Math.max(0, Number(w.production))
-                                : null;
-                              const low = Number(w.low ?? 0);
-                              const high = Number(w.high ?? 0);
-                              const conf = (() => {
-                                if (w.confidence != null && Number.isFinite(Number(w.confidence))) {
-                                  const explicit = Number(w.confidence);
-                                  const normalized = explicit <= 1 ? explicit * 100 : explicit;
-                                  return Math.max(0, Math.min(100, Math.round(normalized)));
-                                }
-                                if (Number.isFinite(low) && Number.isFinite(high) && high > low) {
-                                  return Math.max(0, Math.min(100, Math.round(100 - ((high - low) / Math.max(1, demand)) * 100)));
-                                }
-                                return null;
-                              })();
-
-                              return (
-                                <tr key={i} className="hover:bg-slate-50/80 transition-colors">
-                                  <td className="px-6 py-5">
-                                    <span className="text-sm font-black text-slate-800">{w.date || `W+${i + 1}`}</span>
-                                  </td>
-                                  <td className="px-6 py-5">
-                                    <span className="text-base font-bold text-slate-800 tabular-nums">{formatUnits(demand)} units</span>
-                                  </td>
-                                  <td className="px-6 py-5">
-                                    {production == null ? (
-                                      <span className="text-sm font-semibold text-slate-400">Not available</span>
-                                    ) : (
-                                      <span className="text-base font-bold text-slate-800 tabular-nums">{formatUnits(production)} units</span>
-                                    )}
-                                  </td>
-                                  <td className="px-6 py-5">
-                                    {conf == null ? (
-                                      <span className="text-sm font-semibold text-slate-400">Not available</span>
-                                    ) : (
-                                      <div className="flex items-center gap-3">
-                                        <span className="text-sm font-bold text-slate-700 tabular-nums">{conf}%</span>
-                                        <div className="w-20 bg-slate-200 h-1.5 rounded-full overflow-hidden">
-                                          <div className="h-full bg-emerald-500" style={{ width: `${conf}%` }} />
-                                        </div>
-                                      </div>
-                                    )}
-                                  </td>
-                                  <td className="px-6 py-5">
-                                    {(Number.isFinite(low) && Number.isFinite(high) && (low > 0 || high > 0)) ? (
-                                      <span className="text-sm font-semibold text-slate-700 tabular-nums">{formatUnits(low)} - {formatUnits(high)} units</span>
-                                    ) : (
-                                      <span className="text-sm font-semibold text-slate-400">Not available</span>
-                                    )}
-                                  </td>
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
-                      </div>
-                    )}
-                  </>
-                );
-              })()}
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
       {/* â”€â”€ Trends Modal â”€â”€ */}
       <AnimatePresence>
         {showTrends && (
@@ -2613,36 +2001,53 @@ const ForecastViewer = () => {
                 </div>
 
                 <div className="mt-8 grid grid-cols-1 gap-6 sm:grid-cols-3">
-                  <div className="group rounded-[2.5rem] border border-slate-200 bg-white p-6 shadow-sm transition-all hover:shadow-md hover:border-emerald-200/60">
-                    <div className="flex items-center justify-between mb-4">
-                      <div className="p-3 rounded-2xl bg-slate-50 text-slate-400 group-hover:bg-emerald-50 group-hover:text-emerald-500 transition-colors">
-                        <Box size={20} />
-                      </div>
-                      <span className="text-[10px] font-black uppercase tracking-widest text-slate-300 group-hover:text-emerald-300 transition-colors">Forecast</span>
-                    </div>
-                    <p className="text-[11px] font-black uppercase tracking-[0.2em] text-slate-400">Total Units</p>
-                    <p className="text-3xl font-black text-slate-900 mt-2 tabular-nums">{formatUnits(trendSummary.totalUnits)}</p>
-                  </div>
-                  <div className="group rounded-[2.5rem] border border-slate-200 bg-white p-6 shadow-sm transition-all hover:shadow-md hover:border-violet-200/60">
-                    <div className="flex items-center justify-between mb-4">
-                      <div className="p-3 rounded-2xl bg-slate-50 text-slate-400 group-hover:bg-violet-50 group-hover:text-violet-500 transition-colors">
-                        <Activity size={20} />
-                      </div>
-                      <span className="text-[10px] font-black uppercase tracking-widest text-slate-300 group-hover:text-violet-300 transition-colors">Average</span>
-                    </div>
-                    <p className="text-[11px] font-black uppercase tracking-[0.2em] text-slate-400">Weekly Demand</p>
-                    <p className="text-3xl font-black text-slate-900 mt-2 tabular-nums">{formatUnits(trendSummary.avgUnitsPerWindow)}</p>
-                  </div>
-                  <div className="group rounded-[2.5rem] border border-slate-200 bg-white p-6 shadow-sm transition-all hover:shadow-md hover:border-sky-200/60">
-                    <div className="flex items-center justify-between mb-4">
-                      <div className="p-3 rounded-2xl bg-slate-50 text-slate-400 group-hover:bg-sky-50 group-hover:text-sky-500 transition-colors">
-                        <Star size={20} />
-                      </div>
-                      <span className="text-[10px] font-black uppercase tracking-widest text-slate-300 group-hover:text-sky-300 transition-colors">Leader</span>
-                    </div>
-                    <p className="text-[11px] font-black uppercase tracking-[0.2em] text-slate-400">Top Product</p>
-                    <p className="text-lg font-black text-slate-900 mt-2 truncate leading-tight">{trendSummary.topProduct}</p>
-                  </div>
+                  {[
+                    {
+                      label: 'Total Units',
+                      value: formatUnits(trendSummary.totalUnits),
+                      subLabel: 'Forecast',
+                      icon: Box,
+                      color: 'from-emerald-500 to-teal-600',
+                      borderColor: 'hover:border-emerald-200/60'
+                    },
+                    {
+                      label: 'Weekly Demand',
+                      value: formatUnits(trendSummary.avgUnitsPerWindow),
+                      subLabel: 'Average',
+                      icon: Activity,
+                      color: 'from-violet-500 to-purple-600',
+                      borderColor: 'hover:border-violet-200/60'
+                    },
+                    {
+                      label: 'Top Product',
+                      value: trendSummary.topProduct,
+                      subLabel: 'Leader',
+                      icon: Star,
+                      color: 'from-sky-500 to-blue-600',
+                      borderColor: 'hover:border-sky-200/60'
+                    }
+                  ].map((card, i) => {
+                    const Icon = card.icon;
+                    return (
+                      <motion.div 
+                        key={card.label}
+                        initial={{ opacity: 0, y: 20 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ delay: i * 0.1 }}
+                        whileHover={{ y: -4, scale: 1.02 }}
+                        className={`group rounded-[2.5rem] border border-slate-200 bg-white/70 backdrop-blur-md p-6 shadow-sm transition-all hover:shadow-xl ${card.borderColor}`}
+                      >
+                        <div className="flex items-center justify-between mb-4">
+                          <div className={`p-3 rounded-2xl bg-slate-50 text-slate-400 group-hover:bg-gradient-to-br ${card.color} group-hover:text-white transition-all duration-300`}>
+                            <Icon size={20} strokeWidth={2.5} />
+                          </div>
+                          <span className="text-[10px] font-black uppercase tracking-widest text-slate-300 group-hover:text-slate-500 transition-colors">{card.subLabel}</span>
+                        </div>
+                        <p className="text-[11px] font-black uppercase tracking-[0.2em] text-slate-400">{card.label}</p>
+                        <p className={`font-black text-slate-900 mt-2 truncate ${card.label === 'Top Product' ? 'text-lg' : 'text-3xl tabular-nums tracking-tight'}`}>{card.value}</p>
+                      </motion.div>
+                    );
+                  })}
                 </div>
 
               </div>
@@ -2650,29 +2055,80 @@ const ForecastViewer = () => {
               {!showAllTrends && (
                 <div className="max-h-[calc(94vh-300px)] overflow-y-auto px-5 py-6 sm:px-8">
                   <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1.4fr_1fr]">
-                    <div className="rounded-2xl border border-slate-200 bg-slate-50/40 p-4">
-                      <p className="text-[11px] font-black uppercase tracking-[0.15em] text-slate-500 mb-3">Top 5 Demand Leaders</p>
-                      <div className="h-[260px]">
+                    <div className="rounded-[2rem] border border-white/60 bg-white/70 backdrop-blur-xl p-6 shadow-[0_12px_40px_rgba(0,0,0,0.04)]">
+                      <div className="flex items-center justify-between mb-6">
+                        <div>
+                          <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Demand Distribution</p>
+                          <h4 className="text-lg font-black text-slate-900 mt-1">Top 5 Demand Leaders</h4>
+                        </div>
+                        <div className="h-8 w-8 rounded-xl bg-emerald-500/10 flex items-center justify-center">
+                          <TrendingUp size={16} className="text-emerald-500" />
+                        </div>
+                      </div>
+                      <div className="h-[280px]">
                         <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
-                          <BarChart data={trendData} margin={{ top: 18, right: 8, left: 8, bottom: 0 }}>
-                            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
-                            <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 10, fontWeight: 700 }} />
-                            <Tooltip
-                              cursor={{ fill: 'rgba(15, 23, 42, 0.03)' }}
-                              contentStyle={{ backgroundColor: '#ffffff', borderRadius: '12px', border: '1px solid #e2e8f0', boxShadow: '0 10px 30px rgba(15,23,42,0.08)', fontSize: '11px', color: '#0f172a' }}
-                              labelStyle={{ color: '#334155', fontWeight: 700 }}
-                              formatter={(value) => [`${formatUnits(value)} units`, 'Projected demand']}
-                              labelFormatter={(label, payload) => payload?.[0]?.payload?.fullName || label}
+                          <BarChart data={trendData} margin={{ top: 20, right: 10, left: -20, bottom: 0 }}>
+                            <defs>
+                              <linearGradient id="barGradient" x1="0" y1="0" x2="0" y2="1">
+                                <stop offset="0%" stopColor="#10b981" stopOpacity={1} />
+                                <stop offset="100%" stopColor="#059669" stopOpacity={0.9} />
+                              </linearGradient>
+                            </defs>
+                            <CartesianGrid strokeDasharray="3 4" vertical={false} stroke="#e2e8f0" opacity={0.6} />
+                            <XAxis 
+                              dataKey="name" 
+                              axisLine={false} 
+                              tickLine={false} 
+                              tick={{ fill: '#94a3b8', fontSize: 10, fontWeight: 700 }} 
+                              dy={10}
                             />
-                            <Bar dataKey="value" radius={[8, 8, 0, 0]} barSize={24}>
-                              {trendData.map((entry) => (
-                                <Cell key={entry.name} fill={entry.color} fillOpacity={0.9} />
-                              ))}
+                            <YAxis 
+                              axisLine={false} 
+                              tickLine={false} 
+                              tick={{ fill: '#94a3b8', fontSize: 10, fontWeight: 700 }}
+                            />
+                            <Tooltip
+                              cursor={false}
+                              content={({ active, payload, label }) => {
+                                if (active && payload && payload.length) {
+                                  const data = payload[0].payload;
+                                  return (
+                                    <div className="rounded-2xl border border-white/40 bg-white/80 dark:bg-slate-900/90 backdrop-blur-xl px-4 py-3 shadow-[0_16px_32px_rgba(0,0,0,0.1)]">
+                                      <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1">{data.fullName || label}</p>
+                                      <p className="text-xl font-black text-emerald-600">
+                                        {formatUnits(data.value)}
+                                        <span className="text-[10px] font-bold text-slate-400 ml-1.5 uppercase">Units</span>
+                                      </p>
+                                    </div>
+                                  );
+                                }
+                                return null;
+                              }}
+                            />
+                            <Bar 
+                              dataKey="value" 
+                              radius={[12, 12, 4, 4]} 
+                              fill="url(#barGradient)"
+                              barSize={45}
+                              stroke="none"
+                              strokeWidth={0}
+                              activeBar={false}
+                              animationDuration={1500}
+                              animationBegin={300}
+                              cursor="pointer"
+                              onClick={(data) => {
+                                if (data && data.name) {
+                                  setSelectedHistoryProduct(data.fullName || data.name);
+                                  setShowProductHistory(true);
+                                }
+                              }}
+                            >
                               <LabelList
                                 dataKey="value"
                                 position="top"
                                 formatter={(value) => formatUnits(value)}
-                                style={{ fill: '#334155', fontSize: 10, fontWeight: 700 }}
+                                offset={12}
+                                style={{ fill: '#334155', fontSize: 11, fontWeight: 800, fontFamily: 'Inter, system-ui' }}
                               />
                             </Bar>
                           </BarChart>
@@ -2731,7 +2187,14 @@ const ForecastViewer = () => {
                     </thead>
                     <tbody className="divide-y divide-slate-100">
                       {allTrends.slice(0, 100).map((item, index) => (
-                        <tr key={`${item.name}-${index}`} className="hover:bg-slate-50/50 transition-colors">
+                        <tr 
+                          key={`${item.name}-${index}`} 
+                          className="hover:bg-slate-50/50 transition-colors cursor-pointer"
+                          onClick={() => {
+                            setSelectedHistoryProduct(item.fullName || item.name);
+                            setShowProductHistory(true);
+                          }}
+                        >
                           <td className="px-6 py-4 border-r border-b border-slate-100 text-xs font-black text-slate-400">#{index + 1}</td>
                           <td className="px-6 py-4 border-r border-b border-slate-100 text-sm font-bold text-slate-800 truncate">{item.name}</td>
                           <td className="px-6 py-4 border-r border-b border-slate-100 text-sm font-black text-slate-900 tabular-nums text-right">{formatUnits(item.value)} units</td>
@@ -2744,6 +2207,132 @@ const ForecastViewer = () => {
                   </table>
                 </div>
               )}
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+      <AnimatePresence>
+        {showProductHistory && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/40 backdrop-blur-sm p-4 sm:p-6"
+            onClick={() => setShowProductHistory(false)}
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              onClick={(e) => e.stopPropagation()}
+              className="relative w-full max-w-4xl overflow-hidden rounded-[2.5rem] border border-white/60 bg-white/80 dark:bg-slate-900/80 shadow-[0_32px_64px_rgba(0,0,0,0.15)] backdrop-blur-2xl"
+            >
+              {/* Header */}
+              <div className="flex items-center justify-between border-b border-slate-100 bg-white/50 px-8 py-6">
+                <div>
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-emerald-500/10 text-emerald-600">
+                      <Clock size={20} />
+                    </div>
+                    <div>
+                      <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Order Intelligence</p>
+                      <h2 className="text-xl font-black text-slate-900 dark:text-white">{selectedHistoryProduct}</h2>
+                    </div>
+                  </div>
+                </div>
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={() => setShowProductHistory(false)}
+                    className="group flex h-10 w-10 items-center justify-center rounded-full bg-slate-100 text-slate-500 transition-all hover:bg-slate-900 hover:text-white"
+                  >
+                    <X size={18} />
+                  </button>
+                </div>
+              </div>
+
+              {/* Content */}
+              <div className="max-h-[70vh] overflow-y-auto custom-scrollbar p-8">
+                {productSpecificHistory.length > 0 ? (
+                  <div className="space-y-6">
+                    <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                      <div className="rounded-3xl border border-slate-100 bg-white/40 p-5">
+                        <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">Total Orders</p>
+                        <p className="text-2xl font-black text-slate-900 mt-1">{productSpecificHistory.length}</p>
+                      </div>
+                      <div className="rounded-3xl border border-slate-100 bg-white/40 p-5">
+                        <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">Cumulative Qty</p>
+                        <p className="text-2xl font-black text-emerald-600 mt-1">
+                          {formatUnits(productSpecificHistory.reduce((sum, r) => sum + r.quantity, 0))}
+                        </p>
+                      </div>
+                      <div className="rounded-3xl border border-slate-100 bg-white/40 p-5">
+                        <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">Unique Customers</p>
+                        <p className="text-2xl font-black text-blue-600 mt-1">
+                          {new Set(productSpecificHistory.map(r => r.customerId)).size}
+                        </p>
+                      </div>
+                      <div className="rounded-3xl border border-emerald-100 bg-emerald-50/30 p-5">
+                        <p className="text-[10px] font-black uppercase tracking-widest text-emerald-600">Current Stock</p>
+                        <p className="text-2xl font-black text-emerald-700 mt-1">
+                          {formatUnits(selectedProductMeta?.current_stock || selectedProductMeta?.stock || selectedProductMeta?.inventory || 0)}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="overflow-hidden rounded-3xl border border-slate-100 bg-white shadow-sm">
+                      <table className="w-full text-left border-collapse">
+                        <thead className="bg-slate-50/50 text-[10px] font-black uppercase tracking-widest text-slate-400">
+                          <tr>
+                            <th className="px-6 py-4">Customer</th>
+                            <th className="px-6 py-4 text-right">Quantity</th>
+                            <th className="px-6 py-4">Status</th>
+                            <th className="px-6 py-4 text-right">Order Date</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-50">
+                          {productSpecificHistory.map((row, idx) => (
+                            <tr key={row.id || idx} className="hover:bg-slate-50/30 transition-colors group">
+                              <td className="px-6 py-4">
+                                <p className="text-sm font-bold text-slate-900 group-hover:text-emerald-600 transition-colors">{row.customerName}</p>
+                                <p className="text-[10px] text-slate-400 uppercase font-medium">{row.orderId || 'Direct'}</p>
+                              </td>
+                              <td className="px-6 py-4 text-right font-black text-slate-700 tabular-nums">
+                                {formatUnits(row.quantity)}
+                              </td>
+                              <td className="px-6 py-4">
+                                <span className={`inline-flex rounded-full px-2.5 py-1 text-[10px] font-black uppercase tracking-widest ${
+                                  row.paymentStatus === 'Paid' ? 'bg-emerald-100 text-emerald-700' : 
+                                  row.paymentStatus === 'Partial' ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-600'
+                                }`}>
+                                  {row.paymentStatus}
+                                </span>
+                              </td>
+                              <td className="px-6 py-4 text-right text-xs font-bold text-slate-500">
+                                {row.orderDate || 'N/A'}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex flex-col items-center justify-center py-20 text-center">
+                    <div className="w-16 h-16 rounded-full bg-slate-50 flex items-center justify-center text-slate-300 mb-4">
+                      <Search size={32} />
+                    </div>
+                    <p className="text-sm font-bold text-slate-900">No purchase history found</p>
+                    <p className="text-xs text-slate-500 mt-1">Unable to locate customer transaction data for this product.</p>
+                  </div>
+                )}
+              </div>
+
+              {/* Footer */}
+              <div className="bg-slate-50 px-8 py-4 text-center border-t border-slate-100">
+                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                  Live insights powered by AI demand forecasting
+                </p>
+              </div>
             </motion.div>
           </motion.div>
         )}

@@ -547,13 +547,54 @@ class COOCore:
                 if mapping.get("price")
                 else np.nan
             )
-            std["raw_type"] = (
+            
+            raw_type = (
                 df[mapping["type"]].astype(str).str.upper().str.strip()
                 if mapping.get("type")
-                else ""
+                else pd.Series("", index=df.index)
             )
             std["source_sheet"] = sheet_name
 
+            # Vectorized Transaction Type Mapping
+            std["transaction_type"] = "UNKNOWN"
+            std["type_warning"] = "Unrecognized transaction type"
+
+            # 1. Fundamental logic (Qty-based)
+            purchase_mask = std["quantity"] < 0
+            sale_mask = std["quantity"] > 0
+            
+            std.loc[purchase_mask, "transaction_type"] = "PURCHASE"
+            std.loc[purchase_mask, "type_warning"] = "Mapped from custom logic: Negative Qty = STOCK IN"
+            
+            std.loc[sale_mask, "transaction_type"] = "SALE"
+            std.loc[sale_mask, "type_warning"] = "Mapped from custom logic: Positive Qty = STOCK OUT"
+
+            # 2. Text-based logic for remaining UNKNOWNs (where qty was 0 or nan)
+            # Or if we want to respect text even if qty is present (business preference)
+            # In this business logic, Qty always wins if non-zero.
+            
+            # For rows where Qty was 0 or NaN, try text mapping
+            text_mask = (std["transaction_type"] == "UNKNOWN")
+            if text_mask.any():
+                sanitized = raw_type.str.replace(r"[/-]", " ", regex=True).str.replace(r"\s+", " ", regex=True).str.strip()
+                
+                in_mask = sanitized.str.contains(r"\bIN\b|PURCHASE|INWARD|STOCK IN", regex=True)
+                out_mask = sanitized.str.contains(r"\bOUT\b|SALE|OUTWARD|STOCK OUT", regex=True)
+                ret_mask = sanitized.str.contains(r"RETURN", regex=True)
+                
+                std.loc[text_mask & in_mask, "transaction_type"] = "PURCHASE"
+                std.loc[text_mask & in_mask, "type_warning"] = ""
+                
+                std.loc[text_mask & out_mask, "transaction_type"] = "SALE"
+                std.loc[text_mask & out_mask, "type_warning"] = ""
+                
+                std.loc[text_mask & ret_mask, "transaction_type"] = "RETURN"
+                std.loc[text_mask & ret_mask, "type_warning"] = ""
+
+            std["quantity"] = std["quantity"].astype(float).abs()
+            std["price"] = std["price"].astype(float)
+
+            # Cleanup
             before = len(std)
             std = std[std["product"].notna() & (std["product"] != "")]
             std = std[std["quantity"].notna()]
@@ -564,18 +605,10 @@ class COOCore:
                     f"{sheet_name}: skipped {removed} rows missing product or quantity"
                 )
 
-            std["product"] = std["product"].map(lambda value: product_fix_map.get(value, value))
-            std["customer"] = std["customer"].map(lambda value: party_fix_map.get(value, value))
+            std["product"] = std["product"].replace(product_fix_map)
+            std["customer"] = std["customer"].replace(party_fix_map)
             std.loc[std["customer"].isin(["", "NAN", "NONE", "NULL"]), "customer"] = "UNKNOWN"
             std.loc[std["location"].isin(["", "NAN", "NONE", "NULL"]), "location"] = "UNKNOWN"
-
-            type_map_output = std.apply(
-                lambda row: self._map_transaction_type(row["raw_type"], row["quantity"]), axis=1
-            )
-            std["transaction_type"] = type_map_output.apply(lambda x: x[0])
-            std["type_warning"] = type_map_output.apply(lambda x: x[1])
-            std["quantity"] = std["quantity"].astype(float).abs()
-            std["price"] = std["price"].astype(float)
 
             unknown_count = int((std["transaction_type"] == "UNKNOWN").sum())
             self.validation_counters["unknown_type_rows"] += unknown_count
@@ -838,42 +871,64 @@ class COOCore:
 
         df = self.normalized_df.copy()
         df["date"] = pd.to_datetime(df["date"], errors="coerce")
-        df["location"] = df["location"].fillna("UNKNOWN").astype(str).str.upper().str.strip()
 
         opening_inventory = self._build_inventory_reference_table()
+        opening_lookup = {}
+        opening_counts = {}
         if not opening_inventory.empty:
-            opening_lookup = {
-                (str(row["product"]), str(row["location"])): float(row["opening_stock"])
-                for _, row in opening_inventory.iterrows()
+            for _, row in opening_inventory.iterrows():
+                p, l, s = str(row["product"]), str(row["location"]), float(row["opening_stock"])
+                opening_lookup[(p, l)] = s
+                opening_counts.setdefault(p, []).append(l)
+
+        product_default_loc = {p: locs[0] for p, locs in opening_counts.items() if len(locs) == 1}
+
+        df["resolved_location"] = df["location"].fillna("UNKNOWN").astype(str).str.upper().str.strip()
+        impute_mask = (df["resolved_location"] == "UNKNOWN") & df["product"].isin(product_default_loc)
+        imputed_unknown_locations = int(impute_mask.sum())
+        if imputed_unknown_locations > 0:
+            df.loc[impute_mask, "resolved_location"] = df.loc[impute_mask, "product"].map(product_default_loc)
+
+        # Pre-calculate location rollups
+        loc_agg = (
+            df.groupby(["product", "resolved_location", "transaction_type"])["quantity"]
+            .sum()
+            .unstack(fill_value=0.0)
+            .reset_index()
+        )
+        for col in ["PURCHASE", "SALE", "RETURN"]:
+            if col not in loc_agg.columns:
+                loc_agg[col] = 0.0
+
+        loc_lookup = {}
+        for _, r in loc_agg.iterrows():
+            loc_lookup[(str(r["product"]), str(r["resolved_location"]))] = {
+                "PURCHASE": float(r["PURCHASE"]),
+                "SALE": float(r["SALE"]),
+                "RETURN": float(r["RETURN"]),
             }
-        else:
-            opening_lookup = {}
+
+        # Pre-calculate daily sales for all products to speed up _sales_trend
+        sales_only = df[df["transaction_type"] == "SALE"].dropna(subset=["date"])
+        product_daily_sales = {}
+        if not sales_only.empty:
+            daily_agg = sales_only.groupby([sales_only["product"], sales_only["date"].dt.date])["quantity"].sum().reset_index()
+            for p, p_group in daily_agg.groupby("product"):
+                product_daily_sales[str(p)] = p_group
 
         product_rows: List[Dict[str, Any]] = []
         location_rows: List[Dict[str, Any]] = []
         sales_speeds: List[float] = []
 
-        imputed_unknown_locations = 0
-
         for product, group in df.groupby("product", dropna=True):
+            p_str = str(product)
             purchase_qty = float(group.loc[group["transaction_type"] == "PURCHASE", "quantity"].sum())
             sales_qty = float(group.loc[group["transaction_type"] == "SALE", "quantity"].sum())
             return_qty = float(group.loc[group["transaction_type"] == "RETURN", "quantity"].sum())
 
-            opening_stock = float(
-                sum(stock for (prod, _loc), stock in opening_lookup.items() if prod == str(product))
-            )
+            opening_stock = float(sum(stock for (prod, _loc), stock in opening_lookup.items() if prod == p_str))
             raw_stock = opening_stock + purchase_qty - sales_qty + return_qty
             current_stock = max(0.0, raw_stock)
-            shortage_qty = abs(raw_stock) if raw_stock < 0 else 0.0
-
-            # Removing the error counter for negative stock because 
-            # in this business logic, this implies an unfulfilled order (shortage) 
-            # rather than purely a data entry error.
-            if raw_stock < 0:
-                # self.validation_counters["negative_stock_adjustments"] += 1
-                # self.validation_counters["negative_stock_units_adjusted"] += shortage_qty
-                pass
 
             valid_dates = group["date"].dropna()
             active_days = 0
@@ -884,12 +939,11 @@ class COOCore:
             daily_sales = sales_qty / effective_days if sales_qty > 0 else 0.0
             days_to_stockout = (current_stock / daily_sales) if daily_sales > 0 else None
 
-            trend = self._sales_trend(group)
+            # Use pre-calculated daily sales for trend
+            trend = self._sales_trend(product_daily_sales.get(p_str, pd.DataFrame()))
             return_rate = (return_qty / sales_qty) if sales_qty > 0 else 0.0
 
             flags = []
-            # According to custom logic, negative raw stock (-digit) means
-            # an unfulfilled order pipeline (shortage / demand), not an error.
             if raw_stock < 0:
                 flags.append("SHORTAGE")
             if sales_qty == 0 and current_stock > 0:
@@ -899,18 +953,18 @@ class COOCore:
 
             product_rows.append(
                 {
-                    "product": product,
+                    "product": p_str,
                     "total_purchase": round(purchase_qty, 4),
                     "total_sales": round(sales_qty, 4),
                     "total_returns": round(return_qty, 4),
                     "opening_stock": round(float(opening_stock), 4),
                     "computed_stock_raw": round(float(raw_stock), 4),
                     "current_stock": round(float(current_stock), 4),
-                    "on_hand": round(float(raw_stock), 4),  # on hand is raw math (can be negative if over-ordered)
+                    "on_hand": round(float(raw_stock), 4),
                     "active_days": int(active_days),
                     "daily_sales": round(float(daily_sales), 6),
-                    "daily_demand": round(float(sales_qty), 4),  # sales velocity = total out quantity
-                    "sales_velocity": round(float(purchase_qty + sales_qty), 4), # sum of IN + OUT
+                    "daily_demand": round(float(sales_qty), 4),
+                    "sales_velocity": round(float(purchase_qty + sales_qty), 4),
                     "days_to_stockout": None if days_to_stockout is None else round(float(days_to_stockout), 2),
                     "return_rate": round(float(return_rate), 6),
                     "sales_trend": trend,
@@ -924,45 +978,22 @@ class COOCore:
                 }
             )
 
-            product_opening_locations = {
-                loc for (prod, loc) in opening_lookup.keys() if prod == str(product)
-            }
-
-            # If a product has exactly one known opening location, route unknown txn rows there
-            # so location rollups remain consistent when source sheets omit location.
-            location_group_frame = group.copy()
-            location_group_frame["resolved_location"] = (
-                location_group_frame["location"].fillna("UNKNOWN").astype(str).str.upper().str.strip()
-            )
-            if len(product_opening_locations) == 1:
-                default_location = next(iter(product_opening_locations))
-                unknown_mask = location_group_frame["resolved_location"].eq("UNKNOWN")
-                if bool(unknown_mask.any()):
-                    imputed_unknown_locations += int(unknown_mask.sum())
-                    location_group_frame.loc[unknown_mask, "resolved_location"] = default_location
-
-            product_txn_locations = set(location_group_frame["resolved_location"].dropna().astype(str).tolist())
-            all_locations = sorted(product_opening_locations | product_txn_locations)
-            for location in all_locations:
-                location_group = location_group_frame[location_group_frame["resolved_location"] == location]
-                loc_purchase = float(location_group.loc[location_group["transaction_type"] == "PURCHASE", "quantity"].sum())
-                loc_sales = float(location_group.loc[location_group["transaction_type"] == "SALE", "quantity"].sum())
-                loc_return = float(location_group.loc[location_group["transaction_type"] == "RETURN", "quantity"].sum())
-                loc_opening = float(opening_lookup.get((str(product), str(location)), 0.0))
-                loc_raw_stock = loc_opening + loc_purchase - loc_sales + loc_return
-                loc_current_stock = max(0.0, loc_raw_stock)
-                location_rows.append(
-                    {
-                        "product": str(product),
-                        "location": str(location),
-                        "opening_stock": round(loc_opening, 4),
-                        "purchase_units": round(loc_purchase, 4),
-                        "sale_units": round(loc_sales, 4),
-                        "return_units": round(loc_return, 4),
-                        "computed_stock_raw": round(loc_raw_stock, 4),
-                        "current_stock": round(loc_current_stock, 4),
-                    }
-                )
+            p_opening_locs = {loc for (prod, loc) in opening_lookup.keys() if prod == p_str}
+            p_txn_locs = {loc for (prod, loc) in loc_lookup.keys() if prod == p_str}
+            for location in sorted(p_opening_locs | p_txn_locs):
+                metrics = loc_lookup.get((p_str, location), {"PURCHASE": 0.0, "SALE": 0.0, "RETURN": 0.0})
+                loc_opening = float(opening_lookup.get((p_str, location), 0.0))
+                loc_raw = loc_opening + metrics["PURCHASE"] - metrics["SALE"] + metrics["RETURN"]
+                location_rows.append({
+                    "product": p_str,
+                    "location": location,
+                    "opening_stock": round(loc_opening, 4),
+                    "purchase_units": round(metrics["PURCHASE"], 4),
+                    "sale_units": round(metrics["SALE"], 4),
+                    "return_units": round(metrics["RETURN"], 4),
+                    "computed_stock_raw": round(loc_raw, 4),
+                    "current_stock": max(0.0, round(loc_raw, 4)),
+                })
 
         self._apply_velocity_buckets(product_rows, sales_speeds)
 
@@ -1050,21 +1081,15 @@ class COOCore:
             for row in priority_rows[:5]
         ]
 
-    def _sales_trend(self, group: pd.DataFrame) -> str:
-        sales = group[group["transaction_type"] == "SALE"].copy()
-        if sales.empty:
+    def _sales_trend(self, daily_df: pd.DataFrame) -> str:
+        if daily_df.empty:
             return "NO_SALES"
 
-        sales = sales.dropna(subset=["date"])
-        if sales.empty:
-            return "UNKNOWN"
-
-        daily = sales.groupby(sales["date"].dt.date)["quantity"].sum().reset_index()
-        if len(daily) < 3:
+        if len(daily_df) < 3:
             return "STABLE"
 
-        x = np.arange(len(daily), dtype=float)
-        y = daily["quantity"].astype(float).to_numpy()
+        x = np.arange(len(daily_df), dtype=float)
+        y = daily_df["quantity"].astype(float).to_numpy()
         slope = float(np.polyfit(x, y, deg=1)[0])
 
         if slope > 0.05:
@@ -1216,6 +1241,35 @@ class COOCore:
         freq_threshold = float(agg["frequency"].median()) if not agg.empty else 0.0
         agg["low_activity"] = agg["frequency"] < max(1.0, freq_threshold)
 
+        # Pre-aggregate monthly and weekly breakdowns to avoid O(N*C) nested loops
+        monthly_agg = (
+            monthly.groupby(["customer", "period"], as_index=False)
+            .agg(quantity=("quantity", "sum"), amount=("amount", "sum"))
+            .sort_values("period")
+        )
+        monthly_map = {}
+        for _, m_row in monthly_agg.iterrows():
+            cust = m_row["customer"]
+            monthly_map.setdefault(cust, []).append({
+                "month": m_row["period"],
+                "units": round(float(m_row["quantity"]), 4),
+                "amount": round(float(m_row["amount"]), 2),
+            })
+
+        weekly_agg = (
+            weekly.groupby(["customer", "week"], as_index=False)
+            .agg(quantity=("quantity", "sum"), amount=("amount", "sum"))
+            .sort_values("week")
+        )
+        weekly_map = {}
+        for _, w_row in weekly_agg.iterrows():
+            cust = w_row["customer"]
+            weekly_map.setdefault(cust, []).append({
+                "week": w_row["week"],
+                "units": round(float(w_row["quantity"]), 4),
+                "amount": round(float(w_row["amount"]), 2),
+            })
+
         self.analysis_results["customer_analysis"] = [
             {
                 "customer": row["customer"],
@@ -1232,30 +1286,8 @@ class COOCore:
                 ),
                 "is_top_customer_80_20": bool(row["is_top_customer_80_20"]),
                 "low_activity": bool(row["low_activity"]),
-                "monthly_breakdown": [
-                    {
-                        "month": m_row["period"],
-                        "units": round(float(m_row["quantity"]), 4),
-                        "amount": round(float(m_row["amount"]), 2),
-                    }
-                    for _, m_row in monthly[monthly["customer"] == row["customer"]]
-                    .groupby("period", as_index=False)
-                    .agg(quantity=("quantity", "sum"), amount=("amount", "sum"))
-                    .sort_values("period")
-                    .iterrows()
-                ],
-                "weekly_breakdown": [
-                    {
-                        "week": w_row["week"],
-                        "units": round(float(w_row["quantity"]), 4),
-                        "amount": round(float(w_row["amount"]), 2),
-                    }
-                    for _, w_row in weekly[weekly["customer"] == row["customer"]]
-                    .groupby("week", as_index=False)
-                    .agg(quantity=("quantity", "sum"), amount=("amount", "sum"))
-                    .sort_values("week")
-                    .iterrows()
-                ],
+                "monthly_breakdown": monthly_map.get(row["customer"], []),
+                "weekly_breakdown": weekly_map.get(row["customer"], []),
             }
             for _, row in agg.iterrows()
         ]
@@ -1281,38 +1313,47 @@ class COOCore:
             return
 
         df["period"] = df["date"].dt.to_period("M").astype(str)
-        df["signed_qty"] = np.where(df["transaction_type"].eq("SALE"), -df["quantity"], df["quantity"])
         monthly = (
-            df.groupby("period", as_index=False)
-            .agg(
-                total_in=("quantity", lambda values: float(values[df.loc[values.index, "transaction_type"].eq("PURCHASE")].sum())),
-                total_out=("quantity", lambda values: float(values[df.loc[values.index, "transaction_type"].eq("SALE")].sum())),
-                total_return=("quantity", lambda values: float(values[df.loc[values.index, "transaction_type"].eq("RETURN")].sum())),
-            )
-            .sort_values("period")
+            df.groupby(["period", "transaction_type"])["quantity"]
+            .sum()
+            .unstack(fill_value=0.0)
+            .reset_index()
         )
+        for col in ["PURCHASE", "SALE", "RETURN"]:
+            if col not in monthly.columns:
+                monthly[col] = 0.0
+        monthly = monthly.rename(columns={"PURCHASE": "total_in", "SALE": "total_out", "RETURN": "total_return"})
+        monthly = monthly.sort_values("period")
+
         monthly["net_movement"] = monthly["total_in"] - monthly["total_out"] + monthly["total_return"]
         monthly["growth_pct"] = monthly["total_out"].pct_change().replace([np.inf, -np.inf], np.nan).fillna(0.0) * 100.0
 
-        color_breakdown = {"C": 0.0, "M": 0.0, "Y": 0.0, "K": 0.0, "UNMAPPED": 0.0}
-        sales_df = df[df["transaction_type"] == "SALE"].copy()
         color_aliases = {
             "C": [" C ", " CYAN "],
             "M": [" M ", " MAGENTA "],
             "Y": [" Y ", " YELLOW "],
             "K": [" K ", " BLACK "],
         }
-        for _, row in sales_df.iterrows():
-            text = f"{row.get('product', '')} {row.get('category', '')}".upper()
-            wrapped_text = f" {text} "
-            matched = False
+        sales_df = df[df["transaction_type"] == "SALE"].copy()
+        color_breakdown = {"C": 0.0, "M": 0.0, "Y": 0.0, "K": 0.0, "UNMAPPED": 0.0}
+
+        if not sales_df.empty:
+            search_text = (sales_df["product"].fillna("") + " " + sales_df["category"].fillna("")).str.upper()
+            wrapped_search = " " + search_text + " "
+            matched_mask = pd.Series(False, index=sales_df.index)
+
             for color, aliases in color_aliases.items():
-                if any(alias in wrapped_text for alias in aliases) or text.endswith(f"-{color}") or text.startswith(f"{color}-"):
-                    color_breakdown[color] += float(row.get("quantity", 0.0))
-                    matched = True
-                    break
-            if not matched:
-                color_breakdown["UNMAPPED"] += float(row.get("quantity", 0.0))
+                mask = pd.Series(False, index=sales_df.index)
+                for alias in aliases:
+                    mask |= wrapped_search.str.contains(alias, regex=False)
+                mask |= search_text.str.endswith("-" + color)
+                mask |= search_text.str.startswith(color + "-")
+                
+                assign_mask = mask & ~matched_mask
+                color_breakdown[color] = float(sales_df.loc[assign_mask, "quantity"].sum())
+                matched_mask |= assign_mask
+
+            color_breakdown["UNMAPPED"] = float(sales_df.loc[~matched_mask, "quantity"].sum())
 
         self.analysis_results["backend_analytics"] = {
             "monthly": [

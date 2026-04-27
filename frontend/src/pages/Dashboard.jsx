@@ -10,11 +10,36 @@ import AIPulse from '../components/AIPulse';
 import ProductPurchaseModal from '../components/ProductPurchaseModal';
 import ProcessCard from '../components/ProcessCard';
 import {
-  TrendingUp, AlertCircle, Package, BrainCircuit,
-  Zap, CheckCircle2, ArrowUpRight, ShoppingCart,
-  Factory, Loader2, Target, ShieldCheck, Activity,
-  ChevronRight, Sparkles, Users, Mail, Phone, MapPin, Eye, X, RefreshCw, Download, Share2,
-  AlertTriangle, BarChart3, ArrowRight, ClipboardList, Database, Briefcase
+  TrendingUp,
+  AlertCircle,
+  Package,
+  BrainCircuit,
+  Zap,
+  CheckCircle2,
+  ArrowUpRight,
+  ShoppingCart,
+  Factory,
+  Loader2,
+  Target,
+  ShieldCheck,
+  Activity,
+  ChevronRight,
+  Sparkles,
+  Users,
+  Mail,
+  Phone,
+  MapPin,
+  Eye,
+  X,
+  RefreshCw,
+  Download,
+  Share2,
+  AlertTriangle,
+  BarChart3,
+  ArrowRight,
+  ClipboardList,
+  Database,
+  Briefcase
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import api from '../api/client';
@@ -77,6 +102,12 @@ const SHORT_DATE_FORMATTER = new Intl.DateTimeFormat('en-US', {
   month: 'short',
   day: 'numeric',
 });
+
+const toInputMonth = (date = new Date()) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  return `${year}-${month}`;
+};
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -904,24 +935,24 @@ const MONTH_LABEL_FORMATTER = new Intl.DateTimeFormat('en-US', {
   year: 'numeric',
 });
 
-const aggregateMonthly = (rows, { valueKeys = [], mode = 'sum' } = {}) => {
-  if (!rows || rows.length === 0) return [];
+const aggregateMonthly = (rows = [], { valueKeys = [], mode = 'sum' } = {}) => {
+  if (!Array.isArray(rows) || rows.length === 0) return [];
 
   const groups = new Map();
 
   rows.forEach((row, idx) => {
-    const rawValue = row?.period || row?.name || row?.date;
-    const date = parseTimelineDate(rawValue, idx);
+    const date = parseDate(row?.period || row?.name || row?.date) || new Date();
     if (!date) return;
 
-    const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+    const monthDate = new Date(date.getFullYear(), date.getMonth(), 1);
+    const key = `${monthDate.getFullYear()}-${String(monthDate.getMonth() + 1).padStart(2, '0')}`;
+
     if (!groups.has(key)) {
-      const monthDate = new Date(date.getFullYear(), date.getMonth(), 1);
       groups.set(key, {
         totals: Object.fromEntries(valueKeys.map((item) => [item, 0])),
         count: 0,
-        label: MONTH_LABEL_FORMATTER.format(monthDate),
         order: monthDate.getTime(),
+        label: MONTH_LABEL_FORMATTER.format(monthDate),
       });
     }
 
@@ -948,6 +979,70 @@ const aggregateMonthly = (rows, { valueKeys = [], mode = 'sum' } = {}) => {
         ...aggregated,
       };
     });
+};
+
+const aggregateYearly = (rows = [], { valueKeys = [], mode = 'sum' } = {}) => {
+  if (!Array.isArray(rows) || rows.length === 0) return [];
+
+  const groups = new Map();
+
+  rows.forEach((row, idx) => {
+    const date = parseDate(row?.period || row?.name || row?.date) || new Date();
+    if (!date) return;
+
+    const year = date.getFullYear();
+    const key = String(year);
+
+    if (!groups.has(key)) {
+      groups.set(key, {
+        totals: Object.fromEntries(valueKeys.map((item) => [item, 0])),
+        count: 0,
+        label: key,
+        order: year,
+      });
+    }
+
+    const group = groups.get(key);
+    valueKeys.forEach((keyName) => {
+      const value = Number(row?.[keyName] ?? 0);
+      group.totals[keyName] += Number.isFinite(value) ? value : 0;
+    });
+    group.count += 1;
+  });
+
+  return Array.from(groups.values())
+    .sort((a, b) => a.order - b.order)
+    .map((group) => {
+      const aggregated = {};
+      valueKeys.forEach((keyName) => {
+        aggregated[keyName] = group.count
+          ? (mode === 'avg' ? group.totals[keyName] / group.count : group.totals[keyName])
+          : 0;
+      });
+
+      return {
+        period: group.label,
+        ...aggregated,
+      };
+    });
+};
+
+const filterRowsByGranularity = (rows = [], granularity, selectedDay, selectedMonth, selectedYear) => {
+  return rows.filter((row) => {
+    const date = parseDate(row?.period || row?.name || row?.date);
+    if (!date) return false;
+
+    if (granularity === 'day') {
+      return toIsoDay(date) === selectedDay;
+    }
+
+    if (granularity === 'month') {
+      const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+      return monthKey === selectedMonth;
+    }
+
+    return date.getFullYear() === Number(selectedYear);
+  });
 };
 
 const isTimeoutError = (err) => String(err?.message || '').toLowerCase().includes('timeout');
@@ -1003,7 +1098,7 @@ const ChartMountContainer = ({ className = 'h-56', children }) => {
 };
 
 const Dashboard = () => {
-  const { analysis: liveAnalysis, latestMeta, selectedUploadId } = useAnalysis();
+  const { analysis: liveAnalysis, latestMeta, selectedUploadId, isLocked } = useAnalysis();
   const { isLayoutFullscreen, enableFullscreen, disableFullscreen } = useLayoutFullscreen();
   const navigate = useNavigate();
   const initialAnalysisSnapshotRef = useRef(
@@ -1027,7 +1122,13 @@ const Dashboard = () => {
   const [loading, setLoading] = useState(!initialAnalysisSnapshot);
   const [forecastMode, setForecastMode] = useState('past');
   const [selectedClientForModal, setSelectedClientForModal] = useState(null);
-  const [forecastHorizon, setForecastHorizon] = useState('month');
+  const [forecastViewMode, setForecastViewMode] = useState('chart');
+  const [timeGranularity, setTimeGranularity] = useState('month');
+  const [selectedDay, setSelectedDay] = useState(toIsoDay(new Date()));
+  const [selectedMonth, setSelectedMonth] = useState(new Date().toISOString().slice(0, 7));
+  const [selectedYear, setSelectedYear] = useState(String(new Date().getFullYear()));
+  const [showTrends, setShowTrends] = useState(false);
+  const [showAllTrends, setShowAllTrends] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [selectedCustomerTrend, setSelectedCustomerTrend] = useState(null);
   const [expandedCard, setExpandedCard] = useState(null);
@@ -1036,6 +1137,78 @@ const Dashboard = () => {
   const backgroundBackfillStartedRef = useRef(false);
   const timeoutInfoShownRef = useRef(false);
   const forecastCacheRef = useRef({ fetchedAt: 0, pending: false, retryAfter: 0 });
+
+  const availableMonths = useMemo(() => {
+    const months = new Set();
+    [...pastDailyData, ...forecastRawData].forEach((row) => {
+      const date = parseDate(row?.date || row?.period || row?.name);
+      if (date) months.add(toInputMonth(date));
+    });
+    return Array.from(months).sort().reverse();
+  }, [pastDailyData, forecastRawData]);
+
+  const availableDays = useMemo(() => {
+    const days = new Set();
+    [...pastDailyData, ...forecastRawData].forEach((row) => {
+      const date = parseDate(row?.date || row?.period || row?.name);
+      if (date) days.add(toIsoDay(date));
+    });
+    return Array.from(days).sort().reverse();
+  }, [pastDailyData, forecastRawData]);
+
+  useEffect(() => {
+    if (availableMonths.length > 0 && !availableMonths.includes(selectedMonth)) {
+      setSelectedMonth(availableMonths[0]);
+    }
+  }, [availableMonths]);
+
+  useEffect(() => {
+    if (availableDays.length > 0 && !availableDays.includes(selectedDay)) {
+      setSelectedDay(availableDays[0]);
+    }
+  }, [availableDays]);
+
+  const availableYears = useMemo(() => {
+    const years = new Set([new Date().getFullYear()]);
+    [...pastDailyData, ...pastWeeklyData, ...forecastRawData].forEach((row) => {
+      const d = parseDate(row?.date || row?.period || row?.name);
+      if (d) years.add(d.getFullYear());
+    });
+    return Array.from(years).sort((a, b) => b - a);
+  }, [pastDailyData, pastWeeklyData, forecastRawData]);
+
+  const displayPastData = useMemo(() => {
+    const sourceRows = pastDailyData.length ? pastDailyData : pastWeeklyData;
+    const filteredRows = filterRowsByGranularity(
+      sourceRows,
+      timeGranularity,
+      selectedDay,
+      selectedMonth,
+      selectedYear
+    );
+
+    const normalized = normalizeActualRows(filteredRows);
+    if (timeGranularity === 'year') {
+      return aggregateMonthly(normalized, { valueKeys: ['actual'], mode: 'sum' });
+    }
+    return normalized;
+  }, [pastDailyData, pastWeeklyData, timeGranularity, selectedDay, selectedMonth, selectedYear]);
+
+  const displayForecastData = useMemo(() => {
+    const filteredRows = filterRowsByGranularity(
+      forecastRawData,
+      timeGranularity,
+      selectedDay,
+      selectedMonth,
+      selectedYear
+    );
+
+    const normalized = normalizeForecastRows(filteredRows);
+    if (timeGranularity === 'year') {
+      return aggregateMonthly(normalized, { valueKeys: ['predicted', 'lower', 'upper'], mode: 'sum' });
+    }
+    return normalized;
+  }, [forecastRawData, timeGranularity, selectedDay, selectedMonth, selectedYear]);
 
   const handleForecastModeChange = (mode) => {
     hasUserSelectedForecastModeRef.current = true;
@@ -1046,6 +1219,21 @@ const Dashboard = () => {
     hasUserSelectedForecastModeRef.current = true;
     setForecastMode((prev) => (prev === 'past' ? 'present' : 'past'));
   };
+
+  const ledgerRiskStats = useMemo(() => {
+    // Master Rule: Prioritize the ledger-calculated summary from the context.
+    // If the backend summary is present but we have an inventory model validation, 
+    // it means the context has already calculated the 'Real' numbers.
+    if (!analysis) return { out_of_stock: 0, low_stock: 0, deadstock: 0, overstock: 0, healthy: 0 };
+    
+    return {
+      out_of_stock: Number(analysis.summary?.out_of_stock ?? 0),
+      low_stock: Number(analysis.summary?.low_stock ?? 0),
+      deadstock: Number(analysis.summary?.deadstock ?? 0),
+      overstock: Number(analysis.summary?.overstock ?? 0),
+      healthy: Number(analysis.summary?.healthy ?? 0),
+    };
+  }, [analysis]);
 
   const processCards = useMemo(() => [
     {
@@ -1073,7 +1261,7 @@ const Dashboard = () => {
       description: 'Keep track of items running out and get restock alerts.',
       icon: Package,
       status: 'Scan',
-      stats: { value: analysis?.stock_analysis?.low_stock_items || 0, label: 'Items to buy' },
+      stats: { value: ledgerRiskStats.low_stock || 0, label: 'Items to buy' },
       color: 'emerald',
       delay: 0.3,
       link: '/risks'
@@ -1142,27 +1330,11 @@ const Dashboard = () => {
     }
   }, [analysis, forecastMode, pastDailyData, pastWeeklyData]);
 
-  const displayPastData = useMemo(() => {
-    const sliceCount = forecastHorizon === 'month' ? 6 : 12;
-    const sourceRows = pastDailyData.length ? pastDailyData : pastWeeklyData;
-    return aggregateMonthly(sourceRows, {
-      valueKeys: ['actual'],
-      mode: 'sum',
-    }).slice(-sliceCount);
-  }, [pastDailyData, pastWeeklyData, forecastHorizon]);
-
-  const displayForecastData = useMemo(() => {
-    return aggregateMonthly(forecastRawData, {
-      valueKeys: ['predicted', 'lower', 'upper', 'production'],
-      mode: 'sum',
-    });
-  }, [forecastRawData]);
-
   const displayForecastDataForHorizon = useMemo(() => {
     if (!Array.isArray(displayForecastData)) return [];
-    const sliceCount = forecastHorizon === 'month' ? 6 : 12;
+    const sliceCount = 12;
     return displayForecastData.slice(0, sliceCount);
-  }, [displayForecastData, forecastHorizon]);
+  }, [displayForecastData]);
 
   const salesModalTrendData = useMemo(() => {
     const pastRows = (displayPastData || []).slice(-24).map((row) => ({
@@ -1454,7 +1626,19 @@ const Dashboard = () => {
       }
 
       if (analysisPayload) {
+        // Master Rule: If the context is already locked (sticky), do NOT overwrite it 
+        // with a background fetch unless the fetch is for a specific upload ID we just asked for.
+        if (isLocked && hasUsableLiveAnalysis) {
+          return;
+        }
+
         applyDashboardAnalysis(analysisPayload);
+        return;
+      }
+
+      // If we already have an analysis in view, do NOT clear it just because a background refresh failed.
+      if (liveAnalysis) {
+        if (showLoader) setLoading(false);
         return;
       }
 
@@ -1467,7 +1651,7 @@ const Dashboard = () => {
       }
 
       setData((prev) => ({ ...prev, kpis: [], decisions }));
-      setAnalysis(null);
+      // setAnalysis(null); // REMOVED: Never clear analysis on network failure; keep sticky.
       setPastDailyData([]);
       setPastWeeklyData([]);
       setForecastRawData([]);
@@ -1626,16 +1810,17 @@ const Dashboard = () => {
     ]
     : data.kpis;
 
+
+
   const riskPieData = useMemo(() => {
-    if (!analysis) return [];
     return [
-      { name: 'Out', value: Number(analysis.summary?.out_of_stock ?? 0), color: '#ef4444' },
-      { name: 'Low', value: Number(analysis.summary?.low_stock ?? 0), color: '#f59e0b' },
-      { name: 'Over', value: Number(analysis.summary?.overstock ?? 0), color: '#8b5cf6' },
-      { name: 'Dead', value: Number(analysis.summary?.deadstock ?? 0), color: '#6366f1' },
-      { name: 'Healthy', value: Number(analysis.summary?.healthy ?? 0), color: '#10b981' },
-    ].filter((item) => item.value > 0);
-  }, [analysis]);
+      { name: 'Out', value: ledgerRiskStats.out_of_stock, color: '#ef4444' },
+      { name: 'Low', value: ledgerRiskStats.low_stock, color: '#f59e0b' },
+      { name: 'Over', value: ledgerRiskStats.overstock, color: '#8b5cf6' },
+      { name: 'Dead', value: ledgerRiskStats.deadstock, color: '#6366f1' },
+      { name: 'Healthy', value: ledgerRiskStats.healthy, color: '#10b981' },
+    ].filter((item) => item.value >= 0);
+  }, [ledgerRiskStats]);
 
   const dashboardCustomers = useMemo(() => {
     if (!analysis || typeof analysis !== 'object') return [];
@@ -1892,15 +2077,15 @@ const Dashboard = () => {
       ? Math.max(0, Math.min(100, Math.round(confidenceScore)))
       : null;
 
-    if (!analysis?.stock_analysis) {
+    if (!ledgerRiskStats) {
       return confidenceFallback ?? (typeof data?.system_health === 'number' ? data.system_health : 0);
     }
 
-    const out = Number(analysis.stock_analysis.out_of_stock_items || 0);
-    const low = Number(analysis.stock_analysis.low_stock_items || 0);
-    const over = Number(analysis.stock_analysis.overstock_items || 0);
-    const dead = Number(analysis.stock_analysis.deadstock_items || 0);
-    const healthy = Number(analysis.stock_analysis.healthy_items || 0);
+    const out = Number(ledgerRiskStats.out_of_stock || 0);
+    const low = Number(ledgerRiskStats.low_stock || 0);
+    const over = Number(ledgerRiskStats.overstock || 0);
+    const dead = Number(ledgerRiskStats.deadstock || 0);
+    const healthy = Number(ledgerRiskStats.healthy || 0);
     const total = out + low + over + dead + healthy;
     if (!total) {
       return confidenceFallback ?? (data?.system_health ?? 0);
@@ -2004,148 +2189,147 @@ const Dashboard = () => {
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Main Prediction Visualization */}
+          {/* Demand Insights Section */}
           <div className="lg:col-span-2 flex flex-col gap-6">
-            <GlassCard className="!p-0 !border-slate-200/60 dark:!border-white/10 !bg-white dark:!bg-slate-900/40 overflow-hidden shadow-lg hover:shadow-xl transition-shadow">
-              {/* Header Section */}
-              <div className="px-8 py-6 border-b border-slate-200/40 dark:border-white/10 bg-gradient-to-r from-emerald-50 dark:from-emerald-500/10 to-transparent">
-                <div className="flex items-center justify-between gap-6">
-                  <div className="flex-1">
-                    <h3 className="text-[20px] font-black text-slate-900 dark:text-white tracking-tight leading-none mb-1 text-left">
-                      Sales Performance Analysis
-                    </h3>
-                    <p className="text-[10px] text-slate-500 dark:text-slate-400 font-black uppercase tracking-[0.25em] text-left">
-                      PAST SALES VS AI FORECAST
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-3 shrink-0 flex-wrap">
-                    <div className="inline-flex items-center rounded-full p-1.5 bg-slate-100/80 dark:bg-white/5 border border-slate-200/50 dark:border-white/10 shadow-[inset_0_2px_4px_rgba(0,0,0,0.05)]">
-                      <button
-                        onClick={() => handleForecastModeChange('past')}
-                        className={`px-6 py-2.5 rounded-full text-[10px] font-black uppercase tracking-[0.15em] transition-all duration-300 ${forecastMode === 'past' ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-sm' : 'text-slate-500 dark:text-slate-400 hover:bg-white/50 dark:hover:bg-white/10'}`}
-                      >
-                        Past
-                      </button>
-                      <button
-                        onClick={() => {
-                          handleForecastModeChange('present');
-                          // Direct transition to "Future" view as requested
-                        }}
-                        className={`px-6 py-2.5 rounded-full text-[10px] font-black uppercase tracking-[0.15em] transition-all duration-300 flex items-center gap-2 ${forecastMode === 'present' ? 'bg-slate-900 dark:bg-emerald-500 text-white shadow-xl shadow-emerald-500/20' : 'text-slate-500 dark:text-slate-400 hover:bg-white/50 dark:hover:bg-white/10'}`}
-                      >
-                        Present
-                        <ArrowRight size={12} className={forecastMode === 'present' ? 'opacity-100' : 'opacity-40'} />
-                        Future
-                      </button>
-                    </div>
+            <GlassCard className="!p-0 !border-slate-200/60 dark:!border-white/10 !bg-white dark:!bg-slate-900/40 overflow-visible shadow-xl">
+              {/* AI Engine status bar */}
+              <div className="px-6 py-3 bg-slate-50 border-b border-slate-200 flex items-center gap-3">
+                <div className="w-7 h-7 rounded-xl bg-emerald-100 dark:bg-emerald-500/20 flex items-center justify-center">
+                  <Activity size={14} className="text-emerald-600 dark:text-emerald-400" />
+                </div>
+                <div className="flex-1">
+                  <span className="text-[12px] font-semibold text-slate-700">
+                    AI Analysis Active
+                  </span>
+                  <span className="text-[11px] text-slate-500 ml-2">
+                    Live insights from your sales data
+                  </span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                  <span className="text-[10px] font-semibold text-emerald-600">Live</span>
+                </div>
+              </div>
 
-                    {forecastMode === 'present' && (
-                      <motion.div
-                        initial={{ opacity: 0, x: 20 }}
-                        animate={{ opacity: 1, x: 0 }}
-                        className="inline-flex items-center rounded-full p-1.5 bg-slate-100 dark:bg-white/10 border border-slate-200/60 dark:border-white/10 shadow-sm ml-2"
-                      >
-                        {['month', 'year'].map((h) => (
-                          <button
-                            key={h}
-                            onClick={() => setForecastHorizon(h)}
-                            className={`px-3 py-1.5 rounded-full text-[8px] font-black uppercase tracking-widest transition-all duration-200 ${forecastHorizon === h ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900 shadow-md' : 'text-slate-500 dark:text-slate-400 hover:bg-white/50 dark:hover:bg-white/10'}`}
-                          >
-                            {h === 'year' ? 'Year' : 'Month'}
-                          </button>
-                        ))}
-                      </motion.div>
-                    )}
+              {/* Chart Section Header */}
+              <div className="px-6 pt-6 pb-3">
+                <div className="mb-4">
+                  <div>
+                    <h3 className="text-[20px] font-semibold text-slate-900 dark:text-white leading-none mb-1">
+                      Demand Insights
+                    </h3>
+                    <p className="text-[13px] text-slate-500 dark:text-slate-400">
+                      Sales history & predictions
+                    </p>
                   </div>
                 </div>
               </div>
 
-              {/* Chart Section */}
-              <div className="p-8 space-y-6">
-                <div className="bg-gradient-to-br from-slate-50/50 dark:from-white/5 to-white dark:to-slate-900/20 rounded-2xl border border-slate-200/40 dark:border-white/10 overflow-hidden" style={{ minHeight: '500px' }}>
-                   <PredictionChart
-                    pastData={displayPastData}
-                    forecastData={displayForecastDataForHorizon}
-                    mode={forecastMode}
-                    horizon={forecastHorizon}
-                    showLegend={false}
-                    height={420}
-                    isAnalyzing={isAnalyzing}
-                  />
-                </div>
-
-                {mainSalesExecutiveCards.length > 0 && (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
-                    {mainSalesExecutiveCards.map((card, idx) => {
-                      const styleMap = {
-                        emerald: 'border-emerald-200/70 bg-emerald-50/60 dark:border-emerald-500/30 dark:bg-emerald-500/10',
-                        blue: 'border-blue-200/70 bg-blue-50/60 dark:border-blue-500/30 dark:bg-blue-500/10',
-                        violet: 'border-violet-200/70 bg-violet-50/60 dark:border-violet-500/30 dark:bg-violet-500/10',
-                        slate: 'border-slate-200/70 bg-slate-50/80 dark:border-white/10 dark:bg-slate-800/40',
-                      };
-                      return (
-                        <div key={`${card.title}-${idx}`} className={`rounded-xl border p-3 ${styleMap[card.tint] || styleMap.slate}`}>
-                          <p className="text-[9px] font-black uppercase tracking-[0.16em] text-slate-500">{card.title}</p>
-                          <p className="text-[14px] font-black text-slate-900 dark:text-white mt-1">{card.value}</p>
-                          <p className="text-[10px] text-slate-500 mt-1">{card.sub}</p>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-
-                {hasAnySalesInsightData && (
-                  <div className="rounded-2xl border border-emerald-200/70 dark:border-emerald-500/20 bg-emerald-50/50 dark:bg-emerald-500/5 p-4 flex items-center justify-between gap-3">
-                    <div>
-                      <p className="text-[10px] font-black uppercase tracking-[0.2em] text-emerald-700 dark:text-emerald-300">Performance Insights Available</p>
-                      <p className="text-[11px] font-bold text-emerald-800/90 dark:text-emerald-200/90 mt-1">Open Details pe click karke mode-wise full executive analysis popup me dekho.</p>
-                    </div>
+              {/* Controls row */}
+              <div className="flex flex-wrap items-center gap-2.5 rounded-2xl border border-slate-200 bg-slate-50/60 p-2.5 mb-4 px-6 mx-6">
+                <div className="inline-flex items-center rounded-xl border border-slate-200 bg-white p-1">
+                  {['past', 'future', 'combined'].map((m) => (
                     <button
-                      onClick={() => setExpandedCard('sales')}
-                      className="shrink-0 px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-black uppercase tracking-widest transition-all"
+                      key={m}
+                      onClick={() => setForecastMode(m)}
+                      className={`px-3.5 py-2 rounded-lg text-[12px] font-medium capitalize transition-all duration-200 ${forecastMode === m ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
                     >
-                      Open Popup
+                      {m}
+                    </button>
+                  ))}
+                </div>
+                <motion.div
+                  initial={{ opacity: 0, x: 20 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  className="inline-flex items-center rounded-xl border border-slate-200 bg-white p-1"
+                >
+                  {['day', 'month', 'year'].map((option) => (
+                    <button
+                      key={option}
+                      onClick={() => setTimeGranularity(option)}
+                      className={`px-3 py-2 rounded-lg text-[12px] font-medium capitalize transition-all duration-200 ${timeGranularity === option ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
+                    >
+                      {option}
+                    </button>
+                  ))}
+                </motion.div>
+                <div className="inline-flex items-center rounded-xl border border-slate-200 bg-white px-2 py-1.5">
+                  {timeGranularity === 'day' && (
+                    <input
+                      type="date"
+                      value={selectedDay}
+                      onChange={(e) => setSelectedDay(e.target.value)}
+                      className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[12px] text-slate-700 focus:border-slate-400 focus:outline-none"
+                    />
+                  )}
+                  {timeGranularity === 'month' && (
+                    <input
+                      type="month"
+                      value={selectedMonth}
+                      onChange={(e) => setSelectedMonth(e.target.value)}
+                      className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[12px] text-slate-700 focus:border-slate-400 focus:outline-none"
+                    />
+                  )}
+                  {timeGranularity === 'year' && (
+                    <select
+                      value={selectedYear}
+                      onChange={(e) => setSelectedYear(e.target.value)}
+                      className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[12px] text-slate-700 focus:border-slate-400 focus:outline-none"
+                    >
+                      {availableYears.map((yearValue) => (
+                        <option key={yearValue} value={String(yearValue)}>
+                          {yearValue}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </div>
+                <div className="ml-auto inline-flex items-center gap-2">
+                  <div className="inline-flex items-center rounded-xl border border-slate-200 bg-white p-1 shadow-sm">
+                    <button
+                      onClick={() => setForecastViewMode('chart')}
+                      className={`inline-flex h-9 items-center justify-center gap-1.5 rounded-lg border px-2.5 text-[11px] font-medium transition-colors ${forecastViewMode === 'chart' ? 'border-slate-900 bg-slate-900 text-white' : 'border-transparent text-slate-600 hover:bg-slate-100'}`}
+                    >
+                      <BarChart3 size={14} />
+                      <span>Chart</span>
+                    </button>
+                    <button
+                      onClick={() => setForecastViewMode('table')}
+                      className={`inline-flex h-9 items-center justify-center gap-1.5 rounded-lg border px-2.5 text-[11px] font-medium transition-colors ${forecastViewMode === 'table' ? 'border-slate-900 bg-slate-900 text-white' : 'border-transparent text-slate-600 hover:bg-slate-100'}`}
+                    >
+                      <ClipboardList size={14} />
+                      <span>Table</span>
                     </button>
                   </div>
-                )}
-
-                {/* Advanced Controls - Professional Action Buttons */}
-                <div className="flex items-center justify-between pt-4 border-t border-slate-200/40 dark:border-white/10">
-                  <div className="flex items-center gap-2">
-                    <span className="px-3 py-1.5 rounded-full bg-slate-100 dark:bg-white/10 text-[8px] font-black text-slate-600 dark:text-slate-400 uppercase tracking-widest border border-slate-200/60 dark:border-white/10">
-                      Auto-Update: Every 15 min
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <motion.button
-                      onClick={() => setExpandedCard('sales')}
-                      whileHover={{ scale: 1.08 }}
-                      whileTap={{ scale: 0.92 }}
-                      className="p-2.5 rounded-lg bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-600 dark:text-indigo-400 transition-all border border-indigo-200/60 dark:border-indigo-500/30"
-                      title="Open sales details popup"
-                    >
-                      <Eye size={16} />
-                    </motion.button>
-                    <motion.button
-                      onClick={handleShareChart}
-                      whileHover={{ scale: 1.08 }}
-                      whileTap={{ scale: 0.92 }}
-                      className="p-2.5 rounded-lg bg-orange-500/10 hover:bg-orange-500/20 text-orange-600 dark:text-orange-400 transition-all border border-orange-200/60 dark:border-orange-500/30"
-                      title="Share chart"
-                    >
-                      <Share2 size={16} />
-                    </motion.button>
-                    <motion.button
-                      onClick={handleExportChart}
-                      whileHover={{ scale: 1.08 }}
-                      whileTap={{ scale: 0.92 }}
-                      className="p-2.5 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 transition-all border border-emerald-200/60 dark:border-emerald-500/30"
-                      title="Export chart as CSV"
-                    >
-                      <Download size={16} />
-                    </motion.button>
-                  </div>
+                  <button
+                    onClick={() => setShowTrends(true)}
+                    className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-[12px] font-medium text-slate-700 hover:bg-slate-100"
+                  >
+                    <TrendingUp size={14} />
+                    Trends
+                  </button>
                 </div>
+              </div>
+
+              {/* Chart Content Area */}
+              <div className="p-6">
+                {forecastViewMode === 'chart' ? (
+                  <div className="bg-gradient-to-br from-slate-50/50 dark:from-white/5 to-white dark:to-slate-900/20 rounded-2xl border border-slate-200/40 dark:border-white/10 overflow-hidden" style={{ minHeight: '500px' }}>
+                    <PredictionChart
+                      pastData={displayPastData}
+                      forecastData={displayForecastData}
+                      mode={forecastMode}
+                      horizon={timeGranularity}
+                      showLegend={false}
+                      height={420}
+                      isAnalyzing={isAnalyzing}
+                    />
+                  </div>
+                ) : (
+                  <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm h-[500px] flex items-center justify-center text-slate-400">
+                    Table view coming soon to Dashboard...
+                  </div>
+                )}
               </div>
             </GlassCard>
 
@@ -2281,65 +2465,97 @@ const Dashboard = () => {
         </div>
 
         {analysis && (
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            {/* Inventory Risk Distribution - Professional */}
-            <GlassCard className="!p-0 !border-slate-200/60 dark:!border-white/10 !bg-white dark:!bg-slate-900/40 overflow-hidden shadow-lg hover:shadow-xl transition-shadow">
-              <div className="px-6 py-5 border-b border-slate-200/40 dark:border-white/10 bg-gradient-to-r from-blue-50 dark:from-blue-500/10 to-transparent flex items-center justify-between">
-                <div>
-                  <h3 className="text-[12px] font-black text-slate-900 dark:text-white uppercase tracking-widest">
-                    Inventory Risk Distribution
-                  </h3>
-                  <p className="text-[9px] text-slate-500 dark:text-slate-400 font-bold mt-0.5">Stock health overview</p>
-                </div>
-                <button
-                  onClick={() => setExpandedCard('inventory')}
-                  className="p-2 rounded-lg bg-blue-500/10 hover:bg-blue-500/20 text-blue-600 dark:text-blue-400 transition-all hover:scale-110"
-                  title="Expand view"
-                >
-                  <Eye size={18} />
-                </button>
-              </div>
-              <div className="p-5 space-y-4">
-                <ChartMountContainer className="h-56">
-                  <ResponsiveContainer width="100%" height="100%" minWidth={280} minHeight={220}>
-                    <PieChart>
-                      <Pie
-                        data={riskPieData}
-                        dataKey="value"
-                        nameKey="name"
-                        innerRadius={45}
-                        outerRadius={80}
-                        paddingAngle={1.5}
-                      >
-                        {riskPieData.map((entry) => (
-                          <Cell key={entry.name} fill={entry.color} opacity={0.85} />
-                        ))}
-                      </Pie>
-                      <Tooltip
-                        formatter={(value) => value.toLocaleString()}
-                        contentStyle={{
-                          backgroundColor: '#ffffff',
-                          border: '1px solid #e2e8f0',
-                          borderRadius: '6px',
-                          fontSize: '11px',
-                          fontWeight: '700'
-                        }}
-                      />
-                    </PieChart>
-                  </ResponsiveContainer>
-                </ChartMountContainer>
-
-                <div className="grid grid-cols-3 gap-3 pt-4 border-t border-slate-200/40 dark:border-white/10">
-                  {riskPieData.map((item) => (
-                    <div key={item.name} className="flex flex-col items-center justify-center p-3 rounded-xl bg-slate-50 dark:bg-white/5 hover:bg-slate-100 dark:hover:bg-white/10 transition-all border border-slate-200/60 dark:border-white/10">
-                      <div className="w-2.5 h-2.5 rounded-full shadow-md mb-2" style={{ backgroundColor: item.color }} />
-                      <p className="text-[15px] font-black text-slate-900 dark:text-white leading-none">{item.value}</p>
-                      <p className="text-[9px] font-black text-slate-500 dark:text-slate-400 uppercase tracking-widest mt-1 opacity-80">{item.name}</p>
+          <div className="space-y-6">
+            {/* Row 1: Inventory Risk Distribution - Master Edition (Full Width) */}
+            <div className="grid grid-cols-1 gap-6">
+              <GlassCard className="!p-0 !border-slate-200/60 dark:!border-white/10 !bg-white dark:!bg-slate-900/40 overflow-hidden shadow-2xl hover:shadow-[0_20px_50px_rgba(0,0,0,0.1)] dark:hover:shadow-[0_20px_50px_rgba(0,0,0,0.3)] transition-all duration-500">
+                <div className="px-8 py-6 border-b border-slate-200/40 dark:border-white/10 bg-gradient-to-r from-indigo-50/50 dark:from-indigo-500/10 to-transparent flex items-center justify-between">
+                  <div>
+                    <h3 className="text-[14px] font-black text-slate-900 dark:text-white uppercase tracking-[0.2em]">
+                      Inventory Risk Distribution
+                    </h3>
+                    <div className="flex items-center gap-2 mt-1">
+                      <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                      <p className="text-[10px] text-slate-500 dark:text-slate-400 font-bold uppercase tracking-widest">Real-time Ledger Sync</p>
                     </div>
-                  ))}
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => setExpandedCard('inventory')}
+                      className="p-2.5 rounded-xl bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-600 dark:text-indigo-400 transition-all hover:scale-110 active:scale-95 shadow-sm"
+                      title="Expand view"
+                    >
+                      <Eye size={20} />
+                    </button>
+                  </div>
                 </div>
-              </div>
-            </GlassCard>
+                
+                <div className="p-8 space-y-8">
+                  <div className="flex flex-col lg:flex-row items-center gap-12">
+                    <div className="w-full lg:w-1/2">
+                      <ChartMountContainer className="h-[280px]">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <PieChart>
+                            <Pie
+                              data={riskPieData}
+                              dataKey="value"
+                              nameKey="name"
+                              innerRadius={70}
+                              outerRadius={110}
+                              paddingAngle={4}
+                              stroke="none"
+                            >
+                              {riskPieData.map((entry, index) => (
+                                <Cell 
+                                  key={entry.name} 
+                                  fill={entry.color} 
+                                  className="hover:opacity-80 transition-opacity cursor-pointer focus:outline-none"
+                                />
+                              ))}
+                            </Pie>
+                            <Tooltip
+                              formatter={(value) => [`${value.toLocaleString()} items`, 'Count']}
+                              contentStyle={{
+                                backgroundColor: 'rgba(255, 255, 255, 0.95)',
+                                backdropFilter: 'blur(10px)',
+                                border: 'none',
+                                borderRadius: '16px',
+                                boxShadow: '0 10px 30px rgba(0,0,0,0.1)',
+                                fontSize: '12px',
+                                fontWeight: '900',
+                                padding: '12px 16px'
+                              }}
+                            />
+                          </PieChart>
+                        </ResponsiveContainer>
+                      </ChartMountContainer>
+                    </div>
+
+                    <div className="w-full lg:w-1/2 grid grid-cols-2 lg:grid-cols-5 gap-4">
+                      {riskPieData.map((item) => (
+                        <div 
+                          key={item.name} 
+                          className="group p-5 rounded-3xl bg-slate-50/50 dark:bg-white/5 hover:bg-white dark:hover:bg-white/10 transition-all duration-300 border border-slate-200/50 dark:border-white/5 hover:border-indigo-500/30 hover:shadow-xl hover:-translate-y-1"
+                        >
+                          <div className="flex items-center justify-between mb-3">
+                            <div className="w-3 h-3 rounded-full shadow-lg" style={{ backgroundColor: item.color }} />
+                            <span className="text-[10px] font-black text-slate-400 dark:text-slate-500 uppercase tracking-widest">{item.name}</span>
+                          </div>
+                          <div className="flex items-baseline gap-1">
+                            <p className="text-2xl font-black text-slate-900 dark:text-white tracking-tight">{item.value}</p>
+                            <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400">units</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </GlassCard>
+            </div>
+
+            {/* Row 2: Insights & Growth (2 Columns) */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+
 
             {/* Retention Risk Alerts - Professional */}
             <GlassCard className="!p-0 !border-slate-200/60 dark:!border-white/10 !bg-white dark:!bg-slate-900/40 overflow-hidden shadow-lg hover:shadow-xl transition-shadow">
@@ -2495,13 +2711,24 @@ const Dashboard = () => {
                 </button>
               </div>
               <div className="p-5 space-y-4">
-                <ChartMountContainer className="h-56">
-                  <ResponsiveContainer width="100%" height="100%" minWidth={280} minHeight={220}>
-                    <BarChart data={customerTrendData}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.1)" />
-                      <XAxis dataKey="name" tick={{ fill: '#94a3b8', fontSize: 10 }} />
-                      <YAxis tick={{ fill: '#94a3b8', fontSize: 10 }} />
-                      <Tooltip
+                <ChartMountContainer className="h-56 relative">
+                  {!customerTrendData || customerTrendData.length === 0 ? (
+                    <div className="absolute inset-0 flex flex-col items-center justify-center p-6 text-center">
+                      <div className="w-12 h-12 rounded-2xl bg-slate-100 dark:bg-white/5 flex items-center justify-center text-slate-400 mb-3">
+                        <Users size={24} />
+                      </div>
+                      <p className="text-xs font-black text-slate-900 dark:text-white uppercase tracking-widest">No Customer Data Detected</p>
+                      <p className="text-[10px] text-slate-500 dark:text-slate-400 font-bold mt-1 max-w-[200px]">
+                        AI was unable to map customer IDs in this dataset. Real-time growth tracking requires a 'Customer Name' or 'ID' column.
+                      </p>
+                    </div>
+                  ) : (
+                    <ResponsiveContainer width="100%" height="100%" minWidth={280} minHeight={220}>
+                      <BarChart data={customerTrendData}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.1)" />
+                        <XAxis dataKey="name" tick={{ fill: '#94a3b8', fontSize: 10 }} />
+                        <YAxis tick={{ fill: '#94a3b8', fontSize: 10 }} />
+                        <Tooltip
                         contentStyle={{
                           backgroundColor: '#ffffff',
                           border: '1px solid #e2e8f0',
@@ -2521,6 +2748,7 @@ const Dashboard = () => {
                       />
                     </BarChart>
                   </ResponsiveContainer>
+                  )}
                 </ChartMountContainer>
 
                 <div className="pt-4 border-t border-slate-200/40 dark:border-white/10 grid grid-cols-3 gap-3">
@@ -2545,6 +2773,7 @@ const Dashboard = () => {
                 </div>
               </div>
             </GlassCard>
+            </div>
           </div>
         )}
 
@@ -3061,8 +3290,20 @@ const Dashboard = () => {
                   </button>
                 </div>
                 <div className="p-8 max-h-[70vh] overflow-y-auto">
-                  <ChartMountContainer className="h-80 mb-8">
-                    <ResponsiveContainer width="100%" height="100%" minWidth={280} minHeight={220}>
+                  <ChartMountContainer className="h-80 mb-8 relative">
+                    {!customerTrendData || customerTrendData.length === 0 ? (
+                      <div className="absolute inset-0 flex flex-col items-center justify-center p-10 text-center">
+                        <div className="w-16 h-16 rounded-[2rem] bg-slate-100 dark:bg-white/5 flex items-center justify-center text-slate-400 mb-4">
+                          <Users size={32} />
+                        </div>
+                        <h4 className="text-xl font-black text-slate-900 dark:text-white uppercase tracking-tighter">Detailed Segment Analysis Unavailable</h4>
+                        <p className="text-sm text-slate-500 dark:text-slate-400 font-bold mt-2 max-w-md">
+                          We found {analysis?.summary?.total_products || 0} products but couldn't identify distinct buyers. 
+                          To unlock growth insights, please ensure your file contains a column for Customer Name or Account ID.
+                        </p>
+                      </div>
+                    ) : (
+                      <ResponsiveContainer width="100%" height="100%" minWidth={280} minHeight={220}>
                       <BarChart data={customerTrendData}>
                         <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.15)" />
                         <XAxis dataKey="name" tick={{ fill: '#94a3b8', fontSize: 12 }} />
@@ -3084,6 +3325,7 @@ const Dashboard = () => {
                         />
                       </BarChart>
                     </ResponsiveContainer>
+                    )}
                   </ChartMountContainer>
                   <div className="grid grid-cols-3 gap-4">
                     {customerTrendData.map((item, idx) => {

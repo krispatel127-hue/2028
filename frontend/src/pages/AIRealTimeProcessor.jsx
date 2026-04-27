@@ -1376,11 +1376,31 @@ const AIRealTimeProcessor = () => {
       const idleForMs = Date.now() - lastProgressSignalRef.current;
       if (idleForMs < 900) return;
 
-      const cap = status === 'UPLOADING' ? 96 : 99.2;
+      // Allow progress to crawl very slowly beyond 96% to show activity for large files
+      const cap = status === 'UPLOADING' ? 98.8 : 99.6;
+      
       const nextProgress = (prev) => {
         if (prev >= cap) return prev;
-        const bump = prev < 20 ? 0.9 : (prev < 55 ? 0.65 : (prev < 80 ? 0.4 : 0.22));
-        return Math.min(cap, Number((prev + bump).toFixed(2)));
+        
+        let bump = 0.22;
+        if (prev < 20) bump = 0.9;
+        else if (prev < 55) bump = 0.65;
+        else if (prev < 80) bump = 0.4;
+        else if (prev < 96) bump = 0.22;
+        else if (prev < 97.5) bump = 0.04; // Crawl
+        else bump = 0.01; // Snail crawl for very long analyses
+
+        const next = Math.min(cap, Number((prev + bump).toFixed(2)));
+        
+        // Dynamic message updates for long-running analyses
+        if (next > 96.5 && phaseMessage === 'Crunching data vectors...') {
+          setPhaseMessage('Performing deep analysis on large dataset...');
+        }
+        if (next > 98.2 && phaseMessage === 'Performing deep analysis on large dataset...') {
+          setPhaseMessage('Finalizing complex business insights...');
+        }
+
+        return next;
       };
 
       setProgressPct(nextProgress);
@@ -1388,7 +1408,7 @@ const AIRealTimeProcessor = () => {
     }, 450);
 
     return () => clearInterval(intervalId);
-  }, [status]);
+  }, [status, phaseMessage]);
 
   const dynamicStatusText = useMemo(
     () => getDynamicStatusText(displayProgressPct, phaseLabel),
@@ -1496,13 +1516,13 @@ const AIRealTimeProcessor = () => {
   };
 
   return (
-    <div className="space-y-8 overflow-x-hidden pb-20">
+    <div className="overflow-x-hidden pb-20 pt-8 space-y-10">
       <ProcessorHeader
         isNeuralCooldown={isNeuralCooldown}
         stats={stats}
         status={status}
         isLight={isLight}
-        onStartProcessing={startProcessing}
+        onStartProcessing={reAnalyze}
         onRequestReAnalyze={requestReAnalyze}
         onResetToIdle={resetToIdle}
         isReanalysisMode={isReanalysisMode}
@@ -1562,21 +1582,6 @@ const AIRealTimeProcessor = () => {
         displayColumnsCount={displayColumnsCount}
         displayTableColumns={displayTableColumns}
         effectiveProcessingIndex={effectiveProcessingIndex}
-      />
-
-      <ProcessingStatusFooter
-        status={status}
-        showCompletionHold={showCompletionHold}
-        isLight={isLight}
-        phaseLabel={phaseLabel}
-        dynamicStatusText={dynamicStatusText}
-        telemetry={telemetry}
-        formattedProgress={formattedProgress}
-        processingSnapshot={processingSnapshot}
-        displayProgressPct={displayProgressPct}
-        isReanalysisMode={isReanalysisMode}
-        reanalysisSheetLabel={reanalysisSheetLabel}
-        onEmergencyHalt={handleEmergencyHalt}
       />
 
       <AnimatePresence>
