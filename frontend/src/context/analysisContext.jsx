@@ -232,27 +232,6 @@ const normalizeIncomingCustomer = (customer = {}, idx = 0) => {
   };
 };
 
-const buildDemandForecast = (products = []) => {
-  const top = products.slice(0, 8);
-  const rows = [];
-  top.forEach((p) => {
-    const daily = Math.max(0, toNum(p.daily_demand ?? p.sales_velocity, 0));
-    for (let i = 1; i <= 4; i += 1) {
-      rows.push({
-        sku: p.sku,
-        product: p.name,
-        date: `W+${i}`,
-        predicted_demand: Math.round(daily * 7),
-        production: Math.round(daily * 8),
-        lower_bound: Math.round(daily * 6),
-        upper_bound: Math.round(daily * 9),
-        _synthetic: true,
-      });
-    }
-  });
-  return rows;
-};
-
 const normalizeAnalysisPayload = (payload) => {
   if (!payload || typeof payload !== 'object') return payload;
 
@@ -310,9 +289,8 @@ const normalizeAnalysisPayload = (payload) => {
     payload?.metadata?.forecast_signal_ready === false
     || payload?.demand_forecast_source === 'insufficient_clean_signal'
   );
-  const demandForecast = hasNativeDemandForecast
-    ? payload.demand_forecast
-    : (backendExplicitNoSignal ? [] : buildDemandForecast(products));
+  // Strict mode: never auto-generate demand forecast. Use backend analysis only.
+  const demandForecast = hasNativeDemandForecast ? payload.demand_forecast : [];
 
   const recommendations = Array.isArray(payload.recommendations) && payload.recommendations.length
     ? payload.recommendations
@@ -334,10 +312,10 @@ const normalizeAnalysisPayload = (payload) => {
     stock_analysis: stockAnalysis,
     inventory_summary: inventorySummary,
     demand_forecast: demandForecast,
-    demand_forecast_is_synthetic: backendExplicitNoSignal ? true : !hasNativeDemandForecast,
+    demand_forecast_is_synthetic: !hasNativeDemandForecast,
     demand_forecast_source: hasNativeDemandForecast
       ? 'analysis'
-      : (backendExplicitNoSignal ? 'insufficient_clean_signal' : 'derived_inventory_velocity'),
+      : 'insufficient_clean_signal',
     forecast: {
       ...(payload.forecast || {}),
       next_3_months: [1, 2, 3].map((i) => {

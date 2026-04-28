@@ -225,62 +225,36 @@ const toInputMonth = (date = new Date()) => {
   return `${year}-${month}`;
 };
 
-const FESTIVAL_DATE_OVERRIDES = {
-  2026: {
-    holi: '2026-03-04',
-    eid_al_fitr: '2026-03-20',
-    raksha_bandhan: '2026-08-29',
-    navratri_start: '2026-10-12',
-    dussehra: '2026-10-20',
-    diwali: '2026-11-08',
-  },
-  2027: {
-    holi: '2027-03-24',
-    eid_al_fitr: '2027-03-10',
-    raksha_bandhan: '2027-08-18',
-    navratri_start: '2027-10-01',
-    dussehra: '2027-10-10',
-    diwali: '2027-10-29',
-  },
-  2028: {
-    holi: '2028-03-12',
-    eid_al_fitr: '2028-02-27',
-    raksha_bandhan: '2028-08-07',
-    navratri_start: '2028-09-20',
-    dussehra: '2028-09-29',
-    diwali: '2028-10-17',
-  },
-};
+const extractFestivalCalendarFromAnalysis = (analysisPayload = {}, year) => {
+  const selectedYear = Number(year);
+  const rawSources = [
+    analysisPayload?.festival_calendar,
+    analysisPayload?.festivals,
+    analysisPayload?.festival_insights,
+    analysisPayload?.metadata?.festival_calendar,
+    analysisPayload?.metadata?.festivals,
+  ];
 
-const FESTIVAL_TEMPLATE = [
-  { key: 'new_year', name: 'New Year', month: 1, day: 1, category: 'National' },
-  { key: 'makar_sankranti', name: 'Makar Sankranti', month: 1, day: 14, category: 'Harvest' },
-  { key: 'republic_day', name: 'Republic Day', month: 1, day: 26, category: 'National' },
-  { key: 'holi', name: 'Holi', month: 3, day: 15, category: 'Seasonal' },
-  { key: 'eid_al_fitr', name: 'Eid al-Fitr', month: 4, day: 1, category: 'Religious' },
-  { key: 'raksha_bandhan', name: 'Raksha Bandhan', month: 8, day: 30, category: 'Seasonal' },
-  { key: 'navratri_start', name: 'Navratri Start', month: 10, day: 3, category: 'Seasonal' },
-  { key: 'dussehra', name: 'Dussehra', month: 10, day: 12, category: 'Seasonal' },
-  { key: 'diwali', name: 'Diwali', month: 11, day: 1, category: 'Seasonal' },
-  { key: 'christmas', name: 'Christmas', month: 12, day: 25, category: 'Seasonal' },
-];
+  const rawRows = rawSources.find((src) => Array.isArray(src) && src.length > 0) || [];
+  if (!rawRows.length) return [];
 
-const toFestivalIso = (year, month, day) => `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+  return rawRows
+    .map((row, idx) => {
+      const dateRaw = row?.date || row?.festival_date || row?.day || row?.event_date;
+      const parsedDate = parseLooseDate(dateRaw);
+      if (!parsedDate) return null;
+      if (Number.isFinite(selectedYear) && parsedDate.getFullYear() !== selectedYear) return null;
 
-const buildFestivalCalendar = (year) => {
-  const numericYear = Number(year);
-  const safeYear = Number.isFinite(numericYear) ? numericYear : new Date().getFullYear();
-  const overrides = FESTIVAL_DATE_OVERRIDES[safeYear] || {};
-
-  return FESTIVAL_TEMPLATE
-    .map((festival) => {
-      const isoDate = overrides[festival.key] || toFestivalIso(safeYear, festival.month, festival.day);
-      const parsed = parseLooseDate(isoDate);
-      if (!parsed) return null;
+      const name = toSmartTitle(row?.name || row?.festival || row?.event || row?.title);
+      if (!name) return null;
+      const key = normalizeLookupKey(name || `festival-${idx + 1}`) || `festival-${idx + 1}`;
       return {
-        ...festival,
-        date: isoDate,
-        monthKey: toInputMonth(parsed),
+        key,
+        name,
+        category: toSmartTitle(row?.category || row?.type || 'Festival'),
+        date: toIsoDay(parsedDate),
+        monthKey: toInputMonth(parsedDate),
+        tentative: Boolean(row?.tentative),
       };
     })
     .filter(Boolean)
@@ -345,39 +319,9 @@ const buildForecastSeriesFromAnalysis = (analysisPayload = {}, pastRows = []) =>
     skipSynthetic: Boolean(analysisPayload?.demand_forecast_is_synthetic),
   });
 
-  const next365Days = Array.isArray(analysisPayload?.forecast?.next_365_days)
-    ? analysisPayload.forecast.next_365_days
-    : [];
-
-  let horizonRows = [];
-  if (next365Days.length > 0) {
-    const sortedPastDates = (Array.isArray(pastRows) ? pastRows : [])
-      .map((row) => parseLooseDate(row?.period || row?.date || row?.name))
-      .filter(Boolean)
-      .sort((a, b) => a.getTime() - b.getTime());
-    const lastPastDate = sortedPastDates.length ? sortedPastDates[sortedPastDates.length - 1] : null;
-    const start = lastPastDate ? new Date(lastPastDate) : new Date();
-    if (lastPastDate) {
-      start.setDate(start.getDate() + 1);
-    }
-    start.setHours(0, 0, 0, 0);
-    horizonRows = next365Days.map((value, idx) => {
-      const date = new Date(start);
-      date.setDate(start.getDate() + idx);
-      const predicted = Math.max(0, Math.round(toFiniteNum(value, 0)));
-      return {
-        period: toIsoDay(date),
-        predicted,
-        lower: Math.max(0, predicted * 0.9),
-        upper: Math.max(0, predicted * 1.1),
-      };
-    });
-  }
-
-  // Prefer explicit demand_forecast values where available, but extend horizon
-  // using next_365_days so future year filters can show all projected years.
+  // Strict mode: only explicit date-backed rows from uploaded analysis.
   const merged = new Map();
-  [...horizonRows, ...normalizedDemand].forEach((row) => {
+  normalizedDemand.forEach((row) => {
     const period = String(row?.period || '');
     if (!period) return;
     const existing = merged.get(period) || {};
@@ -411,7 +355,10 @@ const buildForecastProductsFromAnalysis = (analysisPayload) => {
 
   const grouped = new Map();
   rows.forEach((row, idx) => {
-    const sku = String(row.sku || row.product || `SKU-${idx + 1}`);
+    const skuRaw = String(row?.sku || row?.product || '').trim();
+    const dateRaw = String(row?.date || '').trim();
+    if (!skuRaw || !dateRaw) return;
+    const sku = skuRaw;
     const key = sku.toUpperCase();
     if (!grouped.has(key)) {
       grouped.set(key, {
@@ -423,7 +370,7 @@ const buildForecastProductsFromAnalysis = (analysisPayload) => {
     }
     const entry = grouped.get(key);
     entry.weeks.push({
-      date: row.date || `W+${entry.weeks.length + 1}`,
+      date: row.date,
       demand: Math.max(0, Math.round(Number(row.predicted_demand ?? row.predicted ?? 0))),
       production: Math.max(0, Math.round(Number(row.production ?? row.predicted_demand ?? row.predicted ?? 0))),
       low: Number(row.lower_bound ?? row.lower ?? 0),
@@ -702,10 +649,11 @@ const buildHistoryRowsFromAnalysis = (analysisPayload = {}) => {
       const customerName = toSmartTitle(
         getFieldByAliases(row, HISTORY_CUSTOMER_NAME_ALIASES)
         || getFieldByAliases(row, HISTORY_CUSTOMER_ID_ALIASES)
-        || `Customer ${index + 1}`
       );
+      if (!customerName) return null;
       const customerId = cleanTextValue(getFieldByAliases(row, HISTORY_CUSTOMER_ID_ALIASES)) || customerName;
-      const stockName = toSmartTitle(getFieldByAliases(row, HISTORY_PRODUCT_ALIASES) || 'Unknown Stock');
+      const stockName = toSmartTitle(getFieldByAliases(row, HISTORY_PRODUCT_ALIASES));
+      if (!stockName) return null;
       const orderDate = cleanTextValue(getFieldByAliases(row, HISTORY_ORDER_DATE_ALIASES));
       const deliveryDate = cleanTextValue(getFieldByAliases(row, HISTORY_DELIVERY_DATE_ALIASES));
       const effectiveDate = parseLooseDate(orderDate) || parseLooseDate(deliveryDate);
@@ -726,7 +674,7 @@ const buildHistoryRowsFromAnalysis = (analysisPayload = {}) => {
         effectiveDate,
         orderId: cleanTextValue(getFieldByAliases(row, HISTORY_ORDER_ID_ALIASES)),
       };
-    })
+    }).filter(Boolean)
     .filter((row) => row.effectiveDate && row.quantity > 0)
     .sort((a, b) => (b.effectiveDate?.getTime() || 0) - (a.effectiveDate?.getTime() || 0));
 };
@@ -990,7 +938,13 @@ const hasUsableForecastPayload = (payload) => {
 
 // â”€â”€â”€ Main Page â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const ForecastViewer = () => {
-  const { analysis: liveAnalysis, selectedUploadId } = useAnalysis();
+  const {
+    analysis: liveAnalysis,
+    selectedUploadId,
+    latestMeta,
+    pinUploadAnalysis,
+  } = useAnalysis();
+  const autoPinnedUploadRef = useRef(null);
   const [auditData, setAuditData] = useState({ aggregate_accuracy: 0, stability: 'Analyzing...', recommendation: '' });
   const [forecasts, setForecasts] = useState([]);
   const [pastDailyData, setPastDailyData] = useState([]);
@@ -1014,6 +968,13 @@ const ForecastViewer = () => {
   const [historySearchTerm, setHistorySearchTerm] = useState('');
   const [showTrends, setShowTrends] = useState(false);
   const [showAllTrends, setShowAllTrends] = useState(false);
+  const [showFestivalPopup, setShowFestivalPopup] = useState(false);
+  const [festivalSelectedYear, setFestivalSelectedYear] = useState(() => String(new Date().getFullYear()));
+  const [festivalViewMode, setFestivalViewMode] = useState('year');
+  const [festivalTimelineFilter, setFestivalTimelineFilter] = useState('all');
+  const [festivalSelectedMonth, setFestivalSelectedMonth] = useState('all');
+  const [festivalSelectedKey, setFestivalSelectedKey] = useState('all');
+  const [festivalStockFocusKey, setFestivalStockFocusKey] = useState('all');
   const [selectedHistoryProduct, setSelectedHistoryProduct] = useState(null);
   const [showProductHistory, setShowProductHistory] = useState(false);
   const [trendTimeGranularity, setTrendTimeGranularity] = useState('day');
@@ -1366,68 +1327,9 @@ const ForecastViewer = () => {
     });
   }, [historyRows, timeGranularity, selectedDay, selectedMonth, selectedYear, historySearchTerm]);
 
-  const fallbackTableRows = useMemo(() => {
-    if (filteredHistoryRows.length > 0) return [];
+  const fallbackTableRows = useMemo(() => [], []);
 
-    const rowsMap = new Map();
-    displayPastData.forEach((row) => {
-      const key = String(row?.period || '');
-      if (!key) return;
-      rowsMap.set(key, {
-        period: key,
-        actual: Number(row?.actual || 0),
-        predicted: 0,
-      });
-    });
-    displayForecastData.forEach((row) => {
-      const key = String(row?.period || '');
-      if (!key) return;
-      const existing = rowsMap.get(key) || { period: key, actual: 0, predicted: 0 };
-      rowsMap.set(key, {
-        ...existing,
-        predicted: Number(row?.predicted || 0),
-      });
-    });
-
-    const rows = Array.from(rowsMap.values())
-      .filter((row) => {
-        const actual = Number(row?.actual || 0);
-        const predicted = Number(row?.predicted || 0);
-        return actual > 0 || predicted > 0;
-      })
-      .map((row, index) => {
-        const actual = Number(row?.actual || 0);
-        const predicted = Number(row?.predicted || 0);
-        const quantity = forecastMode === 'past'
-          ? actual
-          : (forecastMode === 'future' ? predicted : actual + predicted);
-
-        const paidAmount = forecastMode === 'future' ? 0 : actual;
-        const pendingAmount = forecastMode === 'past' ? 0 : predicted;
-        const paymentStatus = forecastMode === 'future'
-          ? 'Projected'
-          : (forecastMode === 'combined' ? 'Mixed' : 'Paid');
-
-        return {
-          id: `agg-${index}-${row.period}`,
-          customerName: `System Aggregate (${row.period})`,
-          customerId: '',
-          stockName: forecastMode === 'future' ? 'Forecast View' : 'Sales + Forecast View',
-          quantity,
-          totalAmount: quantity,
-          paidAmount,
-          pendingAmount,
-          paymentStatus,
-          orderDate: row.period,
-          deliveryDate: '',
-          orderId: '',
-        };
-      });
-
-    return rows;
-  }, [filteredHistoryRows.length, displayPastData, displayForecastData, forecastMode]);
-
-  const tableRowsToRender = filteredHistoryRows.length > 0 ? filteredHistoryRows : fallbackTableRows;
+  const tableRowsToRender = filteredHistoryRows;
 
   const availableHistoryDays = useMemo(() => {
     const days = new Set();
@@ -1455,6 +1357,7 @@ const ForecastViewer = () => {
 
   useEffect(() => {
     if (forecastViewMode !== 'table') return;
+    if (forecastMode === 'future') return;
     if (cleanTextValue(historySearchTerm)) return;
     if (filteredHistoryRows.length > 0) return;
 
@@ -1471,6 +1374,7 @@ const ForecastViewer = () => {
     }
   }, [
     forecastViewMode,
+    forecastMode,
     historySearchTerm,
     filteredHistoryRows.length,
     timeGranularity,
@@ -1487,11 +1391,7 @@ const ForecastViewer = () => {
     [filteredHistoryRows]
   );
 
-  const globalRowsForCards = useMemo(() => {
-    if (historyRows.length > 0) return historyRows;
-    if (tableRowsToRender.length > 0) return tableRowsToRender;
-    return [];
-  }, [historyRows, tableRowsToRender]);
+  const globalRowsForCards = useMemo(() => historyRows, [historyRows]);
 
   const globalHistorySummary = useMemo(
     () => summarizeHistoryRows(globalRowsForCards),
@@ -1501,21 +1401,73 @@ const ForecastViewer = () => {
   const forecastStats = useMemo(() => {
     const historical = displayPastData.filter(r => r.actual != null);
     const forecast = displayForecastData.filter(r => r.predicted != null);
+    const forecastAll = forecastRawData.filter((r) => r.predicted != null);
 
     const latestSales = historical.length > 0 ? historical[historical.length - 1].actual : 0;
-    const avgForecast = forecast.length > 0 
-      ? Math.round(forecast.reduce((sum, r) => sum + (r.predicted || 0), 0) / forecast.length)
+    const avgForecast = (forecast.length > 0 || forecastAll.length > 0)
+      ? Math.round((forecast.length > 0 ? forecast : forecastAll).reduce((sum, r) => sum + (r.predicted || 0), 0) / (forecast.length > 0 ? forecast.length : forecastAll.length))
       : 0;
     const peakForecast = forecast.length > 0
       ? Math.max(...forecast.map(r => r.predicted || 0))
       : 0;
 
     return { latestSales, avgForecast, peakForecast };
-  }, [displayPastData, displayForecastData]);
+  }, [displayPastData, displayForecastData, forecastRawData]);
+
+  const scopedHistoryRows = useMemo(
+    () => filterHistoryRowsByGranularity(historyRows, timeGranularity, selectedDay, selectedMonth, selectedYear),
+    [historyRows, timeGranularity, selectedDay, selectedMonth, selectedYear]
+  );
+
+  const scopedForecastRows = useMemo(
+    () => filterRowsByGranularity(forecastRawData, timeGranularity, selectedDay, selectedMonth, selectedYear),
+    [forecastRawData, timeGranularity, selectedDay, selectedMonth, selectedYear]
+  );
+
+  const scopedSelectionMetrics = useMemo(() => {
+    const scopedCustomers = new Set(scopedHistoryRows.map((r) => r.customerId || r.customerName).filter(Boolean)).size;
+    const scopedItems = new Set(scopedHistoryRows.map((r) => r.stockName).filter(Boolean)).size;
+    const pastSales = scopedHistoryRows.reduce((sum, row) => sum + Number(row?.quantity || 0), 0);
+    const revenue = scopedHistoryRows.reduce((sum, row) => sum + Number(row?.totalAmount || 0), 0);
+    const futureSales = scopedForecastRows.reduce((sum, row) => sum + Number(row?.predicted || 0), 0);
+    const predictedAvg = scopedForecastRows.length
+      ? Math.round(futureSales / scopedForecastRows.length)
+      : 0;
+
+    return {
+      customers: scopedCustomers,
+      items: scopedItems,
+      orders: scopedHistoryRows.length,
+      sales: forecastMode === 'past' ? pastSales : (forecastMode === 'future' ? futureSales : (pastSales + futureSales)),
+      revenue,
+      aiPredicted: predictedAvg,
+    };
+  }, [scopedHistoryRows, scopedForecastRows, forecastMode]);
 
   const festivalOutlook = useMemo(() => {
-    const selectedYearNumber = Number(selectedYear) || new Date().getFullYear();
-    const festivalCalendar = buildFestivalCalendar(selectedYearNumber);
+    const selectedYearNumber = Number(festivalSelectedYear) || new Date().getFullYear();
+    const festivalCalendar = extractFestivalCalendarFromAnalysis(historySourcePayload || analysisPayload || {}, selectedYearNumber);
+    if (!festivalCalendar.length) {
+      return {
+        festivals: [],
+        baselineDaily: 0,
+        nextFestival: null,
+        topImpactFestival: null,
+      };
+    }
+    const historicalRows = pastDailyData
+      .map((row) => {
+        const parsedDate = parseLooseDate(row?.period);
+        return {
+          parsedDate,
+          actual: Number(row?.actual || 0),
+        };
+      })
+      .filter((row) => row.parsedDate && Number.isFinite(row.actual) && row.actual > 0)
+      .map((row) => ({
+        date: toIsoDay(row.parsedDate),
+        actual: row.actual,
+      }));
     const forecastRowsForYear = forecastRawData
       .map((row) => {
         const parsedDate = parseLooseDate(row?.period);
@@ -1536,6 +1488,7 @@ const ForecastViewer = () => {
       : Number(forecastStats.avgForecast || 0);
 
     const forecastByDate = new Map(forecastRowsForYear.map((row) => [row.date, row.predicted]));
+    const actualByDate = new Map(historicalRows.map((row) => [row.date, row.actual]));
 
     const daysInWindow = 3;
     const today = new Date();
@@ -1546,11 +1499,12 @@ const ForecastViewer = () => {
       if (!center) {
         return {
           ...festival,
-          projectedWindowSales: 0,
-          expectedDailySales: baselineDaily,
-          impactPct: 0,
+          projectedWindowSales: null,
+          expectedDailySales: null,
+          impactPct: null,
           impactDirection: 'flat',
           confidence: 'Low',
+          predictionBacked: false,
           isUpcoming: false,
           daysUntil: null,
           isToday: false,
@@ -1565,7 +1519,15 @@ const ForecastViewer = () => {
       const isWithin45Days = isUpcoming && dayDiff <= 45;
 
       let windowSum = 0;
-      let points = 0;
+      let predictedPoints = 0;
+      let actualWindowSum = 0;
+      let actualPoints = 0;
+
+      const previousYearCenter = new Date(center);
+      previousYearCenter.setFullYear(center.getFullYear() - 1);
+      let previousYearWindowSum = 0;
+      let previousYearPoints = 0;
+
       for (let offset = -daysInWindow; offset <= daysInWindow; offset += 1) {
         const probe = new Date(center);
         probe.setDate(center.getDate() + offset);
@@ -1573,16 +1535,38 @@ const ForecastViewer = () => {
         const predicted = Number(forecastByDate.get(key) || 0);
         if (predicted > 0) {
           windowSum += predicted;
-          points += 1;
+          predictedPoints += 1;
+        }
+
+        const actual = Number(actualByDate.get(key) || 0);
+        if (actual > 0) {
+          actualWindowSum += actual;
+          actualPoints += 1;
+        }
+
+        const previousProbe = new Date(previousYearCenter);
+        previousProbe.setDate(previousYearCenter.getDate() + offset);
+        const previousKey = toIsoDay(previousProbe);
+        const previousActual = Number(actualByDate.get(previousKey) || 0);
+        if (previousActual > 0) {
+          previousYearWindowSum += previousActual;
+          previousYearPoints += 1;
         }
       }
 
-      const fallbackWindowSales = Math.max(0, baselineDaily) * ((daysInWindow * 2) + 1);
-      const projectedWindowSales = points > 0 ? windowSum : fallbackWindowSales;
-      const expectedDailySales = projectedWindowSales / ((daysInWindow * 2) + 1);
-      const impactPct = baselineDaily > 0 ? ((expectedDailySales - baselineDaily) / baselineDaily) * 100 : 0;
-      const impactDirection = impactPct > 5 ? 'up' : (impactPct < -5 ? 'down' : 'flat');
-      const confidence = points >= 4 ? 'High' : (points >= 2 ? 'Medium' : 'Low');
+      const projectedWindowSales = predictedPoints > 0 ? windowSum : null;
+      const expectedDailySales = projectedWindowSales != null ? (projectedWindowSales / ((daysInWindow * 2) + 1)) : null;
+      const impactPct = (expectedDailySales != null && baselineDaily > 0)
+        ? ((expectedDailySales - baselineDaily) / baselineDaily) * 100
+        : null;
+      const impactDirection = impactPct == null ? 'flat' : (impactPct > 5 ? 'up' : (impactPct < -5 ? 'down' : 'flat'));
+      const confidence = predictedPoints >= 4 ? 'High' : (predictedPoints >= 2 ? 'Medium' : 'Low');
+      const actualWindowSales = actualPoints > 0
+        ? actualWindowSum
+        : (previousYearPoints > 0 ? previousYearWindowSum : 0);
+      const actualSource = actualPoints > 0 ? 'Selected year' : (previousYearPoints > 0 ? 'Previous year analog' : 'No history');
+      const varianceUnits = projectedWindowSales != null ? (projectedWindowSales - actualWindowSales) : null;
+      const variancePct = (varianceUnits != null && actualWindowSales > 0) ? (varianceUnits / actualWindowSales) * 100 : null;
 
       return {
         ...festival,
@@ -1591,6 +1575,11 @@ const ForecastViewer = () => {
         impactPct,
         impactDirection,
         confidence,
+        actualWindowSales,
+        actualSource,
+        varianceUnits,
+        variancePct,
+        predictionBacked: predictedPoints > 0,
         isUpcoming,
         daysUntil: dayDiff,
         isToday,
@@ -1599,7 +1588,9 @@ const ForecastViewer = () => {
     });
 
     const nextFestival = annotatedFestivals.find((festival) => festival.isUpcoming) || annotatedFestivals[0] || null;
-    const topImpactFestival = [...annotatedFestivals].sort((a, b) => (b.impactPct - a.impactPct))[0] || null;
+    const topImpactFestival = [...annotatedFestivals]
+      .filter((festival) => Number.isFinite(festival?.impactPct))
+      .sort((a, b) => (b.impactPct - a.impactPct))[0] || null;
 
     return {
       festivals: annotatedFestivals,
@@ -1607,9 +1598,238 @@ const ForecastViewer = () => {
       nextFestival,
       topImpactFestival,
     };
-  }, [selectedYear, forecastRawData, forecastStats.avgForecast]);
+  }, [festivalSelectedYear, forecastRawData, forecastStats.avgForecast, pastDailyData, historySourcePayload, analysisPayload]);
 
-  const customerRowsSource = filteredHistoryRows.length > 0 ? filteredHistoryRows : fallbackTableRows;
+  const festivalYearOptions = useMemo(() => {
+    const currentYear = new Date().getFullYear();
+    const maxFutureYear = currentYear + 2;
+    const minYear = 2020;
+
+    const yearsFromData = new Set();
+    pastDailyData.forEach((row) => {
+      const dt = parseLooseDate(row?.period);
+      if (dt) yearsFromData.add(dt.getFullYear());
+    });
+    forecastRawData.forEach((row) => {
+      const dt = parseLooseDate(row?.period);
+      if (dt) yearsFromData.add(dt.getFullYear());
+    });
+
+    const derivedMin = yearsFromData.size ? Math.min(...Array.from(yearsFromData)) : currentYear;
+    const startYear = Math.max(minYear, Math.min(derivedMin, currentYear));
+    const result = [];
+    for (let y = startYear; y <= maxFutureYear; y += 1) {
+      result.push(String(y));
+    }
+    if (!result.includes(String(currentYear))) {
+      result.push(String(currentYear));
+      result.sort((a, b) => Number(a) - Number(b));
+    }
+    return result;
+  }, [pastDailyData, forecastRawData]);
+
+  const customerRowsSource = filteredHistoryRows;
+  const festivalMonthsInYear = useMemo(() => {
+    const monthMap = new Map();
+    festivalOutlook.festivals.forEach((festival) => {
+      const parsed = parseLooseDate(festival.date);
+      if (!parsed) return;
+      const key = String(parsed.getMonth() + 1).padStart(2, '0');
+      if (!monthMap.has(key)) {
+        monthMap.set(key, parsed.toLocaleDateString('en-US', { month: 'long' }));
+      }
+    });
+    return Array.from(monthMap.entries()).map(([value, label]) => ({ value, label }));
+  }, [festivalOutlook.festivals]);
+
+  useEffect(() => {
+    if (festivalViewMode !== 'month') return;
+    if (festivalSelectedMonth !== 'all') return;
+    if (!festivalMonthsInYear.length) return;
+    setFestivalSelectedMonth(festivalMonthsInYear[0].value);
+  }, [festivalViewMode, festivalSelectedMonth, festivalMonthsInYear]);
+
+  useEffect(() => {
+    if (!festivalYearOptions.length) return;
+    if (festivalYearOptions.includes(festivalSelectedYear)) return;
+    setFestivalSelectedYear(festivalYearOptions[festivalYearOptions.length - 1]);
+  }, [festivalYearOptions, festivalSelectedYear]);
+
+  useEffect(() => {
+    setFestivalSelectedMonth('all');
+    setFestivalSelectedKey('all');
+  }, [festivalSelectedYear]);
+
+  const filteredFestivalRows = useMemo(() => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    let rows = [...festivalOutlook.festivals];
+    if (festivalTimelineFilter === 'past') {
+      rows = rows.filter((festival) => {
+        const dt = parseLooseDate(festival.date);
+        if (!dt) return false;
+        dt.setHours(0, 0, 0, 0);
+        return dt.getTime() < today.getTime();
+      });
+    } else if (festivalTimelineFilter === 'upcoming') {
+      rows = rows.filter((festival) => {
+        const dt = parseLooseDate(festival.date);
+        if (!dt) return false;
+        dt.setHours(0, 0, 0, 0);
+        return dt.getTime() >= today.getTime();
+      });
+    }
+
+    if (festivalViewMode === 'month') {
+      rows = rows.filter((festival) => {
+        if (festivalSelectedMonth === 'all') return true;
+        const dt = parseLooseDate(festival.date);
+        if (!dt) return false;
+        const monthKey = String(dt.getMonth() + 1).padStart(2, '0');
+        return monthKey === festivalSelectedMonth;
+      });
+    }
+
+    if (festivalViewMode === 'specific') {
+      rows = rows.filter((festival) => festivalSelectedKey === 'all' || festival.key === festivalSelectedKey);
+    }
+
+    return rows.sort((a, b) => (parseLooseDate(a.date)?.getTime() || 0) - (parseLooseDate(b.date)?.getTime() || 0));
+  }, [festivalOutlook.festivals, festivalTimelineFilter, festivalViewMode, festivalSelectedMonth, festivalSelectedKey]);
+
+  useEffect(() => {
+    if (!filteredFestivalRows.length) {
+      setFestivalStockFocusKey('all');
+      return;
+    }
+    const validKeys = new Set(filteredFestivalRows.map((f) => f.key));
+    if (festivalStockFocusKey === 'all' || validKeys.has(festivalStockFocusKey)) return;
+    setFestivalStockFocusKey(filteredFestivalRows[0].key);
+  }, [filteredFestivalRows, festivalStockFocusKey]);
+
+  const festivalComparisonChartData = useMemo(() => {
+    return filteredFestivalRows
+      .filter((festival) => Number(festival.actualWindowSales || 0) > 0 || Number(festival.projectedWindowSales || 0) > 0)
+      .slice(0, 12)
+      .map((festival) => ({
+        name: festival.name.length > 11 ? `${festival.name.slice(0, 11)}...` : festival.name,
+        fullName: festival.name,
+        actual: Math.round(Number(festival.actualWindowSales || 0)),
+        predicted: Math.round(Number(festival.projectedWindowSales || 0)),
+      }));
+  }, [filteredFestivalRows]);
+
+  const festivalStockInsights = useMemo(() => {
+    const festivals = festivalOutlook.festivals || [];
+    const targetFestivals = festivals.filter((festival) => (
+      festivalStockFocusKey === 'all' || festival.key === festivalStockFocusKey
+    ));
+    if (!targetFestivals.length) {
+      return { focusedFestival: null, rows: [] };
+    }
+
+    const focusedFestival = targetFestivals[0];
+    const centerDate = parseLooseDate(focusedFestival.date);
+    if (!centerDate) {
+      return { focusedFestival, rows: [] };
+    }
+
+    const windowDays = 3;
+    const startDate = new Date(centerDate);
+    const endDate = new Date(centerDate);
+    startDate.setDate(centerDate.getDate() - windowDays);
+    endDate.setDate(centerDate.getDate() + windowDays);
+
+    const byStock = new Map();
+    historyRows.forEach((row) => {
+      const dt = parseLooseDate(row?.orderDate || row?.deliveryDate || row?.effectiveDate);
+      if (!dt || dt < startDate || dt > endDate) return;
+      const key = String(row?.stockName || 'Unknown Stock');
+      if (!byStock.has(key)) {
+        byStock.set(key, {
+          stockName: key,
+          pastSold: 0,
+          futurePredicted: 0,
+          varianceUnits: 0,
+          discountSuggestion: 'No discount',
+          discountPct: 0,
+          actionSuggestion: 'Maintain standard inventory',
+        });
+      }
+      const item = byStock.get(key);
+      item.pastSold += Number(row?.quantity || 0);
+    });
+
+    forecasts.forEach((product) => {
+      const stockName = String(product?.name || product?.sku || 'Unknown Stock');
+      if (!byStock.has(stockName)) {
+        byStock.set(stockName, {
+          stockName,
+          pastSold: 0,
+          futurePredicted: 0,
+          varianceUnits: 0,
+          discountSuggestion: 'No discount',
+          discountPct: 0,
+          actionSuggestion: 'Maintain standard inventory',
+        });
+      }
+
+      const item = byStock.get(stockName);
+      const datedForecast = (product.weeks || []).reduce((sum, week) => {
+        const weekDate = parseLooseDate(week?.date);
+        if (!weekDate) return sum;
+        if (weekDate >= startDate && weekDate <= endDate) {
+          return sum + Number(week?.demand || 0);
+        }
+        return sum;
+      }, 0);
+
+      if (datedForecast > 0) item.futurePredicted += datedForecast;
+    });
+
+    const rows = Array.from(byStock.values())
+      .map((row) => {
+        const past = Math.round(row.pastSold || 0);
+        const predicted = Math.round(row.futurePredicted || 0);
+        const varianceUnits = predicted - past;
+        const variancePct = past > 0 ? ((varianceUnits / past) * 100) : 0;
+        let discountPct = 0;
+        let actionSuggestion = 'Maintain standard inventory';
+        if (variancePct >= 25) {
+          discountPct = 0;
+          actionSuggestion = 'Increase stock 20-30% and prioritize fast-moving SKUs';
+        } else if (variancePct >= 8) {
+          discountPct = 5;
+          actionSuggestion = 'Add light promo and increase stock 10-15%';
+        } else if (variancePct <= -20) {
+          discountPct = 18;
+          actionSuggestion = 'Strong markdown and reduce procurement for this festival';
+        } else if (variancePct <= -8) {
+          discountPct = 10;
+          actionSuggestion = 'Use bundle offers and keep conservative stock';
+        } else {
+          discountPct = 5;
+          actionSuggestion = 'Run controlled offer and keep balanced stock';
+        }
+
+        return {
+          stockName: row.stockName,
+          pastSold: past,
+          futurePredicted: predicted,
+          varianceUnits,
+          variancePct,
+          discountPct,
+          discountSuggestion: discountPct > 0 ? `${discountPct}% festival offer` : 'No discount',
+          actionSuggestion,
+        };
+      })
+      .filter((row) => row.pastSold > 0 || row.futurePredicted > 0)
+      .sort((a, b) => (b.futurePredicted - a.futurePredicted) || (b.pastSold - a.pastSold))
+      .slice(0, 25);
+
+    return { focusedFestival, rows };
+  }, [festivalOutlook.festivals, festivalStockFocusKey, historyRows, forecasts]);
 
   const topHistoryCustomers = useMemo(() => {
     const byCustomer = new Map();
@@ -1779,6 +1999,15 @@ const ForecastViewer = () => {
 
   useEffect(() => { fetchInitialData(); }, [selectedUploadId, liveAnalysis]);
 
+  useEffect(() => {
+    const latestUploadId = Number(latestMeta?.uploadId || 0);
+    if (selectedUploadId) return;
+    if (!Number.isFinite(latestUploadId) || latestUploadId <= 0) return;
+    if (autoPinnedUploadRef.current === latestUploadId) return;
+    autoPinnedUploadRef.current = latestUploadId;
+    pinUploadAnalysis(latestUploadId);
+  }, [selectedUploadId, latestMeta?.uploadId, pinUploadAnalysis]);
+
   const fetchInitialData = async () => {
     try {
       const contextPayload = extractAnalysisPayload(liveAnalysis);
@@ -1809,19 +2038,9 @@ const ForecastViewer = () => {
         }
       }
 
-      // 2) If no selected upload payload available, use latest backend analysis
-      if (!analysisPayload) {
-        try {
-          const { data } = await api.get('/ingestion/latest-analysis/');
-          sourcePayload = data;
-          analysisPayload = extractAnalysisPayload(data);
-        } catch {
-          analysisPayload = null;
-          sourcePayload = null;
-        }
-      }
-
-      // 3) In-memory context analysis as a final non-persistent fallback
+      // Strict upload-driven mode:
+      // If upload-specific payload is unavailable, use in-memory analysis only.
+      // Do not fall back to generic latest-analysis (can belong to another sheet).
       if (!analysisPayload) {
         analysisPayload = contextPayload;
         sourcePayload = liveAnalysis;
@@ -1864,163 +2083,7 @@ const ForecastViewer = () => {
   return (
     <div className="space-y-6 pb-20">
 
-      {/* ── Consolidated Global Metrics ── */}
-      <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
-        {[
-          {
-            label: 'Customers',
-            value: customerCountForCards,
-            hint: `Across ${stockCountForCards} items`,
-            icon: Users,
-            tone: 'from-sky-500 to-blue-600',
-          },
-          {
-            label: 'Total Sales',
-            value: formatUnits(globalHistorySummary.quantity),
-            hint: `From ${globalRowsForCards.length} orders`,
-            icon: Box,
-            tone: 'from-violet-500 to-purple-600',
-          },
-          {
-            label: 'Revenue',
-            value: formatCompactCurrency(globalHistorySummary.totalAmount),
-            hint: 'Lifetime total',
-            icon: CircleDollarSign,
-            tone: 'from-emerald-500 to-teal-600',
-          },
-          {
-            label: 'Current Stock',
-            value: formatUnits(currentStockTotal),
-            hint: 'Units in hand',
-            icon: ShieldCheck,
-            tone: 'from-blue-600 to-indigo-700',
-          },
-          {
-            label: 'AI Predicted',
-            value: formatUnits(forecastStats.avgForecast),
-            hint: 'Next month estimate',
-            icon: TrendingUp,
-            tone: 'from-emerald-600 to-teal-700',
-          },
-        ].map((card) => {
-          const Icon = card.icon;
-          return (
-            <motion.div 
-              key={card.label} 
-              whileHover={{ y: -4, scale: 1.02 }}
-              className="group relative overflow-hidden rounded-[1.5rem] border border-white/60 bg-white/70 dark:bg-slate-900/40 px-5 py-5 shadow-sm backdrop-blur-md transition-all hover:shadow-xl"
-            >
-              <div className={`absolute top-0 right-0 w-20 h-20 -mr-8 -mt-8 rounded-full bg-gradient-to-br ${card.tone} opacity-[0.03] group-hover:opacity-[0.08] transition-opacity`} />
-              <div className="flex items-start justify-between gap-3 relative z-10">
-                <div className="flex-1 min-w-0">
-                  <p className="text-[10px] font-black uppercase tracking-[0.15em] text-slate-400 group-hover:text-slate-500 transition-colors">{card.label}</p>
-                  <h4 className="mt-1 text-xl font-black text-slate-900 dark:text-white tracking-tight leading-tight">{card.value}</h4>
-                  <p className="mt-1 text-[11px] font-bold text-slate-500 dark:text-slate-400 line-clamp-1">{card.hint}</p>
-                </div>
-                <div className={`flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br ${card.tone} text-white shadow-lg shadow-black/5`}>
-                  <Icon size={18} strokeWidth={2.5} />
-                </div>
-              </div>
-            </motion.div>
-          );
-        })}
-      </div>
 
-      <div className="rounded-[1.75rem] border border-slate-200 bg-gradient-to-br from-amber-50/70 via-white to-emerald-50/40 p-5 shadow-sm">
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <p className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-500">Festival Sales Outlook</p>
-            <h4 className="mt-1 text-lg font-black text-slate-900">AI festival-aware demand projection</h4>
-            <p className="mt-1 text-[12px] font-medium text-slate-600">
-              Selected year: {selectedYear} | Baseline daily sales: {formatUnits(Math.round(festivalOutlook.baselineDaily))}
-            </p>
-          </div>
-          <div className="rounded-2xl border border-amber-200 bg-white px-4 py-3 text-right shadow-sm">
-            <p className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-400">Next Festival</p>
-            <p className="mt-1 text-sm font-black text-slate-900">{festivalOutlook.nextFestival?.name || 'No data'}</p>
-            <p className="mt-0.5 text-[11px] font-semibold text-slate-500">{formatFriendlyDate(festivalOutlook.nextFestival?.date)}</p>
-            <p className="mt-1 text-[11px] font-black text-amber-700">
-              {festivalOutlook.nextFestival?.isToday
-                ? 'Today'
-                : (Number.isFinite(festivalOutlook.nextFestival?.daysUntil)
-                  ? `${festivalOutlook.nextFestival.daysUntil} days left`
-                  : 'Date pending')}
-            </p>
-          </div>
-        </div>
-
-        {festivalOutlook.nextFestival && (
-          <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3">
-            <p className="text-[10px] font-black uppercase tracking-[0.16em] text-amber-700">Festival Alert</p>
-            <p className="mt-1 text-sm font-bold text-amber-900">
-              {festivalOutlook.nextFestival.name} {festivalOutlook.nextFestival.isToday ? 'is today' : `in ${festivalOutlook.nextFestival.daysUntil} days`}:
-              Expected demand {festivalOutlook.nextFestival.impactPct >= 0 ? 'increase' : 'dip'} of {Math.abs(Math.round(festivalOutlook.nextFestival.impactPct || 0))}% vs baseline.
-            </p>
-          </div>
-        )}
-
-        <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-3">
-          <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
-            <p className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-400">Highest Uplift</p>
-            <p className="mt-1 text-sm font-black text-slate-900">{festivalOutlook.topImpactFestival?.name || 'No signal'}</p>
-            <p className="mt-0.5 text-[11px] font-semibold text-emerald-600">
-              {Number.isFinite(festivalOutlook.topImpactFestival?.impactPct)
-                ? `${festivalOutlook.topImpactFestival.impactPct >= 0 ? '+' : ''}${Math.round(festivalOutlook.topImpactFestival.impactPct)}% vs baseline`
-                : '0% vs baseline'}
-            </p>
-          </div>
-          <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
-            <p className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-400">Projected 7-Day Window</p>
-            <p className="mt-1 text-sm font-black text-slate-900">
-              {formatUnits(Math.round(festivalOutlook.nextFestival?.projectedWindowSales || 0))}
-            </p>
-            <p className="mt-0.5 text-[11px] font-semibold text-slate-500">Around next festival</p>
-          </div>
-          <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
-            <p className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-400">Forecast Confidence</p>
-            <p className="mt-1 text-sm font-black text-slate-900">{festivalOutlook.nextFestival?.confidence || 'Low'}</p>
-            <p className="mt-0.5 text-[11px] font-semibold text-slate-500">Based on date-level model coverage</p>
-          </div>
-        </div>
-
-        <div className="mt-4 overflow-hidden rounded-2xl border border-slate-200 bg-white">
-          <div className="grid grid-cols-12 border-b border-slate-100 bg-slate-50/80 px-4 py-3 text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">
-            <div className="col-span-4">Festival</div>
-            <div className="col-span-3 text-right">Date</div>
-            <div className="col-span-3 text-right">Expected Impact</div>
-            <div className="col-span-2 text-right">Sales Window</div>
-          </div>
-          <div className="max-h-56 overflow-y-auto">
-            {festivalOutlook.festivals.map((festival) => {
-              const impactClass = festival.impactDirection === 'up'
-                ? 'text-emerald-600'
-                : (festival.impactDirection === 'down' ? 'text-rose-600' : 'text-slate-500');
-              const impactLabel = `${festival.impactPct >= 0 ? '+' : ''}${Math.round(festival.impactPct)}%`;
-              return (
-                <div
-                  key={`${festival.key}-${festival.date}`}
-                  className={`grid grid-cols-12 items-center border-b px-4 py-3 text-sm last:border-b-0 ${festival.isWithin45Days ? 'border-amber-200 bg-amber-50/40' : 'border-slate-100'}`}
-                >
-                  <div className="col-span-4 min-w-0">
-                    <p className="truncate font-bold text-slate-900">
-                      {festival.name}
-                      {festival.isWithin45Days && (
-                        <span className="ml-2 inline-flex rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-black uppercase tracking-wide text-amber-700">
-                          Highlight
-                        </span>
-                      )}
-                    </p>
-                    <p className="text-[11px] font-semibold text-slate-500">{festival.category}</p>
-                  </div>
-                  <div className="col-span-3 text-right text-[12px] font-semibold text-slate-600">{formatFriendlyDate(festival.date)}</div>
-                  <div className={`col-span-3 text-right text-[12px] font-black ${impactClass}`}>{impactLabel}</div>
-                  <div className="col-span-2 text-right text-[12px] font-black text-slate-900">{formatUnits(Math.round(festival.projectedWindowSales || 0))}</div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      </div>
       {/* ── Main Card ── */}
       <GlassCard className="!p-0 !border-slate-200/60 dark:!border-white/10 !bg-white dark:!bg-slate-900/40 overflow-visible shadow-xl">
 
@@ -2178,7 +2241,75 @@ const ForecastViewer = () => {
                 <TrendingUp size={14} />
                 Trends
               </button>
+              <button
+                onClick={() => setShowFestivalPopup(true)}
+                className="flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] font-medium text-amber-800 hover:bg-amber-100"
+              >
+                <Calendar size={14} />
+                Festival
+              </button>
             </div>
+          </div>
+
+          <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-5">
+            {[
+              {
+                label: 'Customers',
+                value: scopedSelectionMetrics.customers,
+                hint: `Across ${scopedSelectionMetrics.items} items`,
+                icon: Users,
+                tone: 'from-sky-500 to-blue-600',
+              },
+              {
+                label: 'Total Sales',
+                value: formatUnits(scopedSelectionMetrics.sales),
+                hint: `From ${scopedSelectionMetrics.orders} orders`,
+                icon: Box,
+                tone: 'from-violet-500 to-purple-600',
+              },
+              {
+                label: 'Revenue',
+                value: formatCompactCurrency(scopedSelectionMetrics.revenue),
+                hint: `${forecastMode === 'future' ? 'Past billed value' : 'Selected window value'}`,
+                icon: CircleDollarSign,
+                tone: 'from-emerald-500 to-teal-600',
+              },
+              {
+                label: 'Current Stock',
+                value: formatUnits(currentStockTotal),
+                hint: 'Units in hand',
+                icon: ShieldCheck,
+                tone: 'from-blue-600 to-indigo-700',
+              },
+              {
+                label: 'AI Predicted',
+                value: formatUnits(scopedSelectionMetrics.aiPredicted),
+                hint: 'Selection-based estimate',
+                icon: TrendingUp,
+                tone: 'from-emerald-600 to-teal-700',
+              },
+            ].map((card) => {
+              const Icon = card.icon;
+              return (
+                <motion.div
+                  key={`scoped-${card.label}`}
+                  whileHover={{ y: -2, scale: 1.01 }}
+                  className="group relative overflow-hidden rounded-2xl border border-slate-200 bg-white px-4 py-4 shadow-sm transition-all hover:shadow-md"
+                >
+                  <div className={`absolute top-0 right-0 h-16 w-16 -mr-6 -mt-6 rounded-full bg-gradient-to-br ${card.tone} opacity-[0.05]`} />
+                  <div className="relative z-10 flex items-start justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <p className="text-[10px] font-black uppercase tracking-[0.15em] text-slate-400">{card.label}</p>
+                      <h4 className="mt-1 text-3xl font-black text-slate-900 tracking-tight">{card.value}</h4>
+                      <p className="mt-1 text-[11px] font-bold text-slate-500">{card.hint}</p>
+                    </div>
+                    <div className={`flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br ${card.tone} text-white shadow`}>
+                      <Icon size={18} strokeWidth={2.5} />
+                    </div>
+                  </div>
+                </motion.div>
+              );
+            })}
           </div>
 
           <div className="mt-5 grid grid-cols-1 gap-6">
@@ -2296,98 +2427,7 @@ const ForecastViewer = () => {
           </div>
           
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {/* Product Donut Chart */}
-            <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm hover:shadow-md transition-shadow">
-              <div className="flex items-center gap-3 mb-4">
-                <div className="w-10 h-10 rounded-xl bg-violet-500/10 text-violet-600 flex items-center justify-center">
-                  <Package size={18} />
-                </div>
-                <div>
-                  <h5 className="text-sm font-bold text-slate-900">Demand by Product</h5>
-                  <p className="text-[11px] text-slate-500 font-medium">Top 5 items</p>
-                </div>
-              </div>
-              
-              {forecastViewMode === 'chart' ? (
-                <div className="h-[250px] relative">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <PieChart>
-                      <Pie
-                        data={trendData}
-                        cx="50%"
-                        cy="50%"
-                        innerRadius={65}
-                        outerRadius={95}
-                        paddingAngle={4}
-                        dataKey="value"
-                        nameKey="name"
-                        stroke="none"
-                        animationDuration={1500}
-                      >
-                        {trendData.map((entry, index) => (
-                          <Cell key={`cell-${index}`} fill={entry.color} />
-                        ))}
-                      </Pie>
-                      <Tooltip
-                        cursor={false}
-                        content={({ active, payload }) => {
-                          if (active && payload && payload.length) {
-                            const data = payload[0].payload;
-                            return (
-                              <div className="rounded-2xl border border-white/40 bg-white/90 backdrop-blur-xl px-4 py-3 shadow-xl">
-                                <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1">{data.fullName || data.name}</p>
-                                <p className="text-lg font-black" style={{ color: data.color }}>
-                                  {formatUnits(data.value)}
-                                  <span className="text-[10px] font-bold text-slate-400 ml-1 uppercase">Units</span>
-                                </p>
-                              </div>
-                            );
-                          }
-                          return null;
-                        }}
-                      />
-                    </PieChart>
-                  </ResponsiveContainer>
-                  {/* Glowing center text */}
-                  <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Total</p>
-                    <p className="text-xl font-black text-slate-900 mt-0.5">{formatUnits(trendSummary.totalUnits)}</p>
-                  </div>
-                </div>
-              ) : (
-                <div className="h-[250px] overflow-y-auto custom-scrollbar pr-2">
-                  <table className="w-full border-separate border-spacing-0">
-                    <thead className="bg-slate-50/80 sticky top-0 z-10">
-                      <tr>
-                        <th className="px-4 py-3 text-left text-[10px] font-black uppercase tracking-widest text-slate-400 border-b border-slate-100 rounded-tl-xl">Product</th>
-                        <th className="px-4 py-3 text-right text-[10px] font-black uppercase tracking-widest text-slate-400 border-b border-slate-100">Share</th>
-                        <th className="px-4 py-3 text-right text-[10px] font-black uppercase tracking-widest text-slate-400 border-b border-slate-100 rounded-tr-xl">Volume</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {trendData.slice(0, 5).map((item, idx) => (
-                        <tr key={idx} className="hover:bg-slate-50/50 transition-colors group">
-                          <td className="px-4 py-3 border-b border-slate-50">
-                            <div className="flex items-center gap-3">
-                              <span className="w-2.5 h-2.5 rounded-full shadow-sm" style={{ backgroundColor: item.color }} />
-                              <p className="text-sm font-bold text-slate-800 truncate max-w-[150px] group-hover:text-emerald-600 transition-colors">{item.fullName || item.name}</p>
-                            </div>
-                          </td>
-                          <td className="px-4 py-3 border-b border-slate-50 text-right">
-                            <span className="text-[11px] font-bold text-slate-500">
-                              {trendSummary.totalUnits > 0 ? `${Math.round((item.value / trendSummary.totalUnits) * 100)}%` : '0%'}
-                            </span>
-                          </td>
-                          <td className="px-4 py-3 border-b border-slate-50 text-right">
-                            <p className="text-sm font-black text-slate-900 tabular-nums">{formatUnits(item.value)}</p>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </div>
+            
 
             {/* Customer Horizontal Bar Chart */}
             <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm hover:shadow-md transition-shadow">
@@ -2840,6 +2880,238 @@ const ForecastViewer = () => {
                   </table>
                 </div>
               )}
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+      <AnimatePresence>
+        {showFestivalPopup && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[90] flex items-center justify-center bg-transparent p-4 sm:p-6"
+            onClick={() => setShowFestivalPopup(false)}
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.97, y: 14 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.97, y: 14 }}
+              onClick={(e) => e.stopPropagation()}
+              className="relative w-full max-w-6xl overflow-hidden rounded-[2rem] border border-slate-200/90 bg-white shadow-[0_24px_56px_rgba(15,23,42,0.14)]"
+            >
+              <div className="flex items-center justify-between border-b border-slate-200 bg-gradient-to-r from-amber-50 via-white to-emerald-50 px-6 py-4">
+                <div className="flex items-center gap-3">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-amber-200 bg-amber-100 text-amber-700">
+                    <Calendar size={18} />
+                  </div>
+                  <div>
+                    <p className="text-[10px] font-black uppercase tracking-[0.15em] text-slate-500">Festival Insights</p>
+                    <h3 className="text-lg font-black text-slate-900">Festival Sales Popup</h3>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setShowFestivalPopup(false)}
+                  className="rounded-xl border border-slate-200 bg-white p-2 text-slate-500 hover:bg-slate-50 hover:text-slate-900"
+                  aria-label="Close festival popup"
+                >
+                  <X size={16} />
+                </button>
+              </div>
+              <div className="max-h-[75vh] overflow-y-auto p-6">
+                <div className="mb-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                  <div className="grid grid-cols-1 gap-3 lg:grid-cols-5">
+                    <select
+                      value={festivalSelectedYear}
+                      onChange={(e) => setFestivalSelectedYear(e.target.value)}
+                      className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-[12px] font-semibold text-slate-700"
+                    >
+                      {festivalYearOptions.map((yearValue) => (
+                        <option key={`festival-year-${yearValue}`} value={yearValue}>{yearValue}</option>
+                      ))}
+                    </select>
+                    <div className="inline-flex items-center rounded-xl border border-slate-200 bg-white p-1">
+                      {[
+                        { key: 'year', label: 'Year' },
+                        { key: 'month', label: 'Month' },
+                        { key: 'specific', label: 'Specific' },
+                      ].map((item) => (
+                        <button
+                          key={item.key}
+                          onClick={() => setFestivalViewMode(item.key)}
+                          className={`rounded-lg px-3 py-2 text-[11px] font-bold ${festivalViewMode === item.key ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
+                        >
+                          {item.label}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="inline-flex items-center rounded-xl border border-slate-200 bg-white p-1">
+                      {[
+                        { key: 'all', label: 'All' },
+                        { key: 'past', label: 'Past' },
+                        { key: 'upcoming', label: 'Upcoming' },
+                      ].map((item) => (
+                        <button
+                          key={item.key}
+                          onClick={() => setFestivalTimelineFilter(item.key)}
+                          className={`rounded-lg px-3 py-2 text-[11px] font-bold ${festivalTimelineFilter === item.key ? 'bg-amber-500 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
+                        >
+                          {item.label}
+                        </button>
+                      ))}
+                    </div>
+                    {festivalViewMode === 'month' && (
+                      <select
+                        value={festivalSelectedMonth}
+                        onChange={(e) => setFestivalSelectedMonth(e.target.value)}
+                        className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-[12px] font-semibold text-slate-700"
+                      >
+                        <option value="all">All months</option>
+                        {festivalMonthsInYear.map((month) => (
+                          <option key={month.value} value={month.value}>{month.label}</option>
+                        ))}
+                      </select>
+                    )}
+                    {festivalViewMode === 'specific' && (
+                      <select
+                        value={festivalSelectedKey}
+                        onChange={(e) => setFestivalSelectedKey(e.target.value)}
+                        className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-[12px] font-semibold text-slate-700"
+                      >
+                        <option value="all">All festivals</option>
+                        {festivalOutlook.festivals.map((festival) => (
+                          <option key={`festival-option-${festival.key}`} value={festival.key}>{festival.name}</option>
+                        ))}
+                      </select>
+                    )}
+                    <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-right">
+                      <p className="text-[10px] font-black uppercase tracking-[0.14em] text-emerald-700">Visible Festivals</p>
+                      <p className="text-sm font-black text-emerald-800">{filteredFestivalRows.length}</p>
+                      <p className="text-[10px] font-semibold text-emerald-700">Future limit: +2 years</p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                  <div className="mb-3 flex items-center justify-between">
+                    <p className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-400">Actual vs Predicted</p>
+                    <p className="text-[11px] font-semibold text-slate-500">
+                      {festivalViewMode === 'year' ? 'Year view' : (festivalViewMode === 'month' ? 'Month view' : 'Specific festival view')} • Festival 7-day window
+                    </p>
+                  </div>
+                  <div className="h-64">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={festivalComparisonChartData} margin={{ top: 6, right: 8, left: -16, bottom: 0 }}>
+                        <CartesianGrid strokeDasharray="3 4" vertical={false} stroke="#e2e8f0" />
+                        <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 10, fontWeight: 700 }} />
+                        <YAxis axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 10, fontWeight: 700 }} />
+                        <Tooltip
+                          cursor={{ fill: 'rgba(15, 23, 42, 0.04)' }}
+                          formatter={(value) => [formatUnits(value), '']}
+                          labelFormatter={(_, payload) => payload?.[0]?.payload?.fullName || ''}
+                        />
+                        <Bar dataKey="actual" name="Actual Sales" fill="#0f766e" radius={[7, 7, 0, 0]} />
+                        <Bar dataKey="predicted" name="Predicted Sales" fill="#f59e0b" radius={[7, 7, 0, 0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+
+                <div className="mt-4 overflow-hidden rounded-2xl border border-slate-200">
+                  <div className="grid grid-cols-12 border-b border-slate-100 bg-white px-4 py-3 text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">
+                    <div className="col-span-4">Festival</div>
+                    <div className="col-span-3 text-right">Date</div>
+                    <div className="col-span-2 text-right">Actual</div>
+                    <div className="col-span-3 text-right">Predicted</div>
+                  </div>
+                  <div className="max-h-64 overflow-y-auto bg-white">
+                    {filteredFestivalRows.map((festival) => (
+                      <div key={`festival-popup-${festival.key}-${festival.date}`} className="grid grid-cols-12 items-center border-b border-slate-100 px-4 py-3 text-sm last:border-b-0">
+                        <div className="col-span-4 min-w-0">
+                          <p className="truncate font-bold text-slate-900">{festival.name}</p>
+                          <p className="text-[11px] font-semibold text-slate-500">{festival.category}</p>
+                        </div>
+                        <div className="col-span-3 text-right text-[12px] font-semibold text-slate-600">{formatFriendlyDate(festival.date)}</div>
+                        <div className="col-span-2 text-right text-[12px] font-black text-slate-700">{formatUnits(Math.round(festival.actualWindowSales || 0))}</div>
+                        <div className="col-span-3 text-right text-[12px] font-black text-slate-900">
+                          {festival.projectedWindowSales != null ? formatUnits(Math.round(festival.projectedWindowSales)) : '--'}
+                        </div>
+                      </div>
+                    ))}
+                    {filteredFestivalRows.length === 0 && (
+                      <div className="px-4 py-10 text-center">
+                        <p className="text-sm font-bold text-slate-700">No festival found for selected filters</p>
+                        <p className="mt-1 text-xs text-slate-500">Try switching from Past to Upcoming or change month/festival.</p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="mt-4 overflow-hidden rounded-2xl border border-slate-200 bg-white">
+                  <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-4 py-3">
+                    <div>
+                      <p className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">Festival Stock Intelligence</p>
+                      <p className="text-[12px] font-semibold text-slate-600">
+                        {festivalStockInsights.focusedFestival?.name || 'Festival'}: past vs future stock demand + discount strategy
+                      </p>
+                    </div>
+                    <select
+                      value={festivalStockFocusKey}
+                      onChange={(e) => setFestivalStockFocusKey(e.target.value)}
+                      className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-[12px] font-semibold text-slate-700"
+                    >
+                      <option value="all">Auto (first visible festival)</option>
+                      {filteredFestivalRows.map((festival) => (
+                        <option key={`focus-festival-${festival.key}-${festival.date}`} value={festival.key}>
+                          {festival.name} ({formatFriendlyDate(festival.date)})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="max-h-72 overflow-y-auto">
+                    <table className="w-full border-separate border-spacing-0">
+                      <thead className="sticky top-0 z-10 bg-white">
+                        <tr>
+                          {['Stock', 'Past Sold', 'Future Forecast', 'Gap', 'Discount', 'Suggestion'].map((label, idx) => (
+                            <th
+                              key={`festival-stock-th-${label}`}
+                              className={`border-b border-slate-100 px-4 py-3 text-[10px] font-black uppercase tracking-[0.16em] text-slate-400 ${idx === 0 || idx === 5 ? 'text-left' : 'text-right'}`}
+                            >
+                              {label}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {festivalStockInsights.rows.map((row) => {
+                          const gapClass = row.varianceUnits > 0 ? 'text-emerald-600' : (row.varianceUnits < 0 ? 'text-rose-600' : 'text-slate-500');
+                          return (
+                            <tr key={`festival-stock-row-${row.stockName}`} className="hover:bg-slate-50/60">
+                              <td className="border-b border-slate-100 px-4 py-3 text-left text-sm font-bold text-slate-900">{row.stockName}</td>
+                              <td className="border-b border-slate-100 px-4 py-3 text-right text-sm font-black text-slate-700 tabular-nums">{formatUnits(row.pastSold)}</td>
+                              <td className="border-b border-slate-100 px-4 py-3 text-right text-sm font-black text-slate-900 tabular-nums">{formatUnits(row.futurePredicted)}</td>
+                              <td className={`border-b border-slate-100 px-4 py-3 text-right text-sm font-black tabular-nums ${gapClass}`}>
+                                {row.varianceUnits >= 0 ? '+' : ''}{formatUnits(row.varianceUnits)}
+                                <span className="ml-1 text-[10px] font-semibold text-slate-500">({row.pastSold > 0 ? `${row.variancePct >= 0 ? '+' : ''}${Math.round(row.variancePct)}%` : '--'})</span>
+                              </td>
+                              <td className="border-b border-slate-100 px-4 py-3 text-right text-sm font-bold text-amber-700">{row.discountSuggestion}</td>
+                              <td className="border-b border-slate-100 px-4 py-3 text-left text-[12px] font-semibold text-slate-600">{row.actionSuggestion}</td>
+                            </tr>
+                          );
+                        })}
+                        {festivalStockInsights.rows.length === 0 && (
+                          <tr>
+                            <td colSpan={6} className="px-4 py-8 text-center">
+                              <p className="text-sm font-bold text-slate-700">Stock-level festival data not available for selected filter</p>
+                              <p className="mt-1 text-xs text-slate-500">Upload richer product-wise sales history for deeper stock recommendations.</p>
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
             </motion.div>
           </motion.div>
         )}
