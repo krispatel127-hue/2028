@@ -15,6 +15,7 @@ const toNum = (value, fallback = 0) => {
   return Number.isFinite(n) ? n : fallback;
 };
 const LOW_STOCK_FALLBACK_THRESHOLD = DEFAULT_LOW_STOCK_THRESHOLD;
+const ANALYSIS_FINGERPRINT_MAX_LENGTH = 200000;
 
 const deriveConfidenceLabel = (score) => {
   const s = toNum(score, 0);
@@ -340,6 +341,21 @@ const normalizeAnalysisPayload = (payload) => {
   };
 };
 
+const createAnalysisFingerprint = (payload) => {
+  if (!payload || typeof payload !== 'object') return '';
+  try {
+    const serialized = JSON.stringify(payload);
+    if (!serialized) return '';
+    // Protect UI thread from keeping extremely large keys in memory.
+    if (serialized.length > ANALYSIS_FINGERPRINT_MAX_LENGTH) {
+      return serialized.slice(0, ANALYSIS_FINGERPRINT_MAX_LENGTH);
+    }
+    return serialized;
+  } catch {
+    return '';
+  }
+};
+
 export const AnalysisProvider = ({ children }) => {
   const resolveStoredAnalysisUploadId = () => {
     try {
@@ -443,10 +459,8 @@ export const AnalysisProvider = ({ children }) => {
     const buildAnalysisKey = (payload) => {
       const sessionId = payload?.analysis_isolation?.session_id || 'none';
       const score = payload?.confidence_score ?? 'na';
-      const sales = payload?.sales_summary?.total_sales ?? 'na';
-      const low = payload?.stock_analysis?.low_stock_items ?? 'na';
-      const over = payload?.stock_analysis?.overstock_items ?? 'na';
-      return `${sessionId}:${score}:${sales}:${low}:${over}`;
+      const payloadFingerprint = createAnalysisFingerprint(payload);
+      return `${sessionId}:${score}:${payloadFingerprint}`;
     };
 
     const poll = async () => {

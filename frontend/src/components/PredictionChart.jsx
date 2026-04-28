@@ -285,7 +285,7 @@ const PredictionChart = ({
     <motion.div
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
-      className="flex h-full flex-col rounded-[2.5rem] border border-slate-200/80 dark:border-white/10 bg-gradient-to-b from-white to-slate-50/50 dark:from-slate-900 dark:to-slate-900/80 p-8 shadow-sm"
+      className="flex h-full min-h-0 min-w-0 flex-col rounded-[2.5rem] border border-slate-200/80 dark:border-white/10 bg-gradient-to-b from-white to-slate-50/50 dark:from-slate-900 dark:to-slate-900/80 p-8 shadow-sm"
       style={{ minHeight: chartHeight }}
     >
 
@@ -304,8 +304,13 @@ const PredictionChart = ({
         )}
 
 
-      <div className="flex-1 overflow-hidden rounded-[2rem] border border-white/60 dark:border-white/10 bg-white/40 dark:bg-slate-800/20 p-6 backdrop-blur-sm">
-        <ResponsiveContainer width="100%" height={fullScreen ? '100%' : Math.max(300, chartHeight - 240)} minWidth={280} minHeight={220}>
+      <div className="flex-1 min-h-0 min-w-0 overflow-hidden rounded-[2rem] border border-white/60 dark:border-white/10 bg-white/40 dark:bg-slate-800/20 p-6 backdrop-blur-sm">
+        <ResponsiveContainer
+          width="100%"
+          height={Math.max(300, fullScreen ? chartHeight : (chartHeight - 240))}
+          minWidth={280}
+          minHeight={220}
+        >
           <AreaChart data={chartData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
             <defs>
               <linearGradient id="forecastFill" x1="0" y1="0" x2="0" y2="1">

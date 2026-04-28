@@ -85,6 +85,13 @@ function attachAuthorizationHeader(config, token) {
   return config;
 }
 
+function shouldBypassCache(config) {
+  const method = String(config?.method || 'get').toLowerCase();
+  if (method !== 'get') return false;
+  const url = String(config?.url || '');
+  return url.includes('/ingestion/latest-analysis/') || url.includes('/ingestion/upload-analysis/');
+}
+
 function getRequestBaseUrl(config) {
   if (config && config._forceBaseURL && config.baseURL) {
     return config.baseURL;
@@ -166,6 +173,14 @@ api.interceptors.request.use(
 
     const accessToken = getAccessToken();
     attachAuthorizationHeader(config, accessToken);
+
+    if (shouldBypassCache(config)) {
+      config.headers = config.headers || {};
+      config.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate';
+      config.headers.Pragma = 'no-cache';
+      config.headers.Expires = '0';
+      config.params = { ...(config.params || {}), _rt: Date.now() };
+    }
 
     return config;
   },

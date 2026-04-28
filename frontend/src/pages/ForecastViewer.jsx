@@ -391,6 +391,66 @@ const buildForecastProductsFromAnalysis = (analysisPayload) => {
   return result.filter((item) => Array.isArray(item.weeks) && item.weeks.length > 0);
 };
 
+const buildCustomerLeaderboardFromAnalysis = (analysisPayload = {}) => {
+  const directCustomers = Array.isArray(analysisPayload?.customers) ? analysisPayload.customers : [];
+  const customerAnalysis = Array.isArray(analysisPayload?.customer_analysis)
+    ? analysisPayload.customer_analysis
+    : (Array.isArray(analysisPayload?.customer_analysis?.customers) ? analysisPayload.customer_analysis.customers : []);
+
+  const merged = new Map();
+  const ingest = (customer, index, source = 'analysis') => {
+    if (!customer || typeof customer !== 'object') return;
+    const name = toSmartTitle(
+      customer.customer_name
+      || customer.name
+      || customer.company
+      || customer.party_name
+      || customer.party
+      || customer.customer
+      || customer.buyer_name
+      || customer.buyer
+    );
+    const customerId = cleanTextValue(
+      customer.customer_id
+      || customer.party_id
+      || customer.party_code
+      || customer.account_id
+      || name
+      || `customer-${index + 1}`
+    );
+    const key = customerId || name;
+    if (!key) return;
+
+    const amount = toSafeNumber(customer.total_purchase ?? customer.total_purchased ?? customer.amount ?? customer.value) ?? 0;
+    const quantity = toSafeNumber(customer.frequency ?? customer.orders ?? customer.quantity ?? customer.total_units) ?? 0;
+    const existing = merged.get(key) || {
+      customerName: name || customerId || `Customer ${index + 1}`,
+      customerId: customerId || name || `customer-${index + 1}`,
+      orders: 0,
+      quantity: 0,
+      totalAmount: 0,
+      pendingAmount: 0,
+      latestOrderDate: customer.last_order_date || customer.last_purchase_date || null,
+      source,
+    };
+
+    existing.customerName = existing.customerName || name || existing.customerId;
+    existing.orders = Math.max(existing.orders, Math.round(quantity));
+    existing.quantity = Math.max(existing.quantity, Math.round(quantity));
+    existing.totalAmount = Math.max(existing.totalAmount, amount);
+    existing.latestOrderDate = existing.latestOrderDate || customer.last_order_date || customer.last_purchase_date || null;
+    merged.set(key, existing);
+  };
+
+  directCustomers.forEach((customer, index) => ingest(customer, index, 'customers'));
+  customerAnalysis.forEach((customer, index) => ingest(customer, index, 'customer_analysis'));
+
+  return Array.from(merged.values())
+    .filter((entry) => isMeaningfulText(entry.customerName) || isMeaningfulText(entry.customerId))
+    .sort((a, b) => (b.totalAmount - a.totalAmount) || (b.quantity - a.quantity))
+    .slice(0, 100);
+};
+
 const pickFromRow = (row, keys = []) => {
   if (!row || typeof row !== 'object') return null;
   for (const key of keys) {
@@ -977,6 +1037,7 @@ const ForecastViewer = () => {
   const [festivalStockFocusKey, setFestivalStockFocusKey] = useState('all');
   const [selectedHistoryProduct, setSelectedHistoryProduct] = useState(null);
   const [showProductHistory, setShowProductHistory] = useState(false);
+  const [customerLeaderboardView, setCustomerLeaderboardView] = useState('top5');
   const [trendTimeGranularity, setTrendTimeGranularity] = useState('day');
   const [trendSelectedDay, setTrendSelectedDay] = useState(() => toInputDay(new Date()));
   const [trendSelectedMonth, setTrendSelectedMonth] = useState(() => toInputMonth(new Date()));
@@ -1424,26 +1485,6 @@ const ForecastViewer = () => {
     [forecastRawData, timeGranularity, selectedDay, selectedMonth, selectedYear]
   );
 
-  const scopedSelectionMetrics = useMemo(() => {
-    const scopedCustomers = new Set(scopedHistoryRows.map((r) => r.customerId || r.customerName).filter(Boolean)).size;
-    const scopedItems = new Set(scopedHistoryRows.map((r) => r.stockName).filter(Boolean)).size;
-    const pastSales = scopedHistoryRows.reduce((sum, row) => sum + Number(row?.quantity || 0), 0);
-    const revenue = scopedHistoryRows.reduce((sum, row) => sum + Number(row?.totalAmount || 0), 0);
-    const futureSales = scopedForecastRows.reduce((sum, row) => sum + Number(row?.predicted || 0), 0);
-    const predictedAvg = scopedForecastRows.length
-      ? Math.round(futureSales / scopedForecastRows.length)
-      : 0;
-
-    return {
-      customers: scopedCustomers,
-      items: scopedItems,
-      orders: scopedHistoryRows.length,
-      sales: forecastMode === 'past' ? pastSales : (forecastMode === 'future' ? futureSales : (pastSales + futureSales)),
-      revenue,
-      aiPredicted: predictedAvg,
-    };
-  }, [scopedHistoryRows, scopedForecastRows, forecastMode]);
-
   const festivalOutlook = useMemo(() => {
     const selectedYearNumber = Number(festivalSelectedYear) || new Date().getFullYear();
     const festivalCalendar = extractFestivalCalendarFromAnalysis(historySourcePayload || analysisPayload || {}, selectedYearNumber);
@@ -1858,8 +1899,24 @@ const ForecastViewer = () => {
     return Array.from(byCustomer.values())
       .filter((entry) => Number(entry.totalAmount || 0) > 0 || Number(entry.quantity || 0) > 0)
       .sort((a, b) => (b.totalAmount - a.totalAmount) || (b.quantity - a.quantity))
-      .slice(0, 5);
+      .slice(0, 100);
   }, [customerRowsSource]);
+
+  const topCustomerLeaderboard = useMemo(() => {
+    if (topHistoryCustomers.length > 0) return topHistoryCustomers;
+    return buildCustomerLeaderboardFromAnalysis(analysisPayload || {});
+  }, [topHistoryCustomers, analysisPayload]);
+
+  const visibleCustomerLimit = customerLeaderboardView === 'top5'
+    ? 5
+    : customerLeaderboardView === 'top20'
+      ? 20
+      : topCustomerLeaderboard.length;
+
+  const visibleHistoryCustomers = useMemo(
+    () => topCustomerLeaderboard.slice(0, visibleCustomerLimit),
+    [topCustomerLeaderboard, visibleCustomerLimit]
+  );
 
   const analysisProducts = useMemo(
     () => getAnalysisProducts(analysisPayload || {}),
@@ -1889,13 +1946,46 @@ const ForecastViewer = () => {
     const customersFromAnalysis = Array.isArray(analysisPayload?.customers) ? analysisPayload.customers.length : 0;
     if (customersFromAnalysis > 0) return customersFromAnalysis;
 
-    return topHistoryCustomers.length;
-  }, [globalHistorySummary.customerCount, analysisPayload, topHistoryCustomers]);
+    return topCustomerLeaderboard.length;
+  }, [globalHistorySummary.customerCount, analysisPayload, topCustomerLeaderboard]);
 
   const stockCountForCards = useMemo(() => {
     if (globalHistorySummary.stockCount > 0) return globalHistorySummary.stockCount;
     return analysisProducts.length;
   }, [globalHistorySummary.stockCount, analysisProducts]);
+
+  const scopedSelectionMetrics = useMemo(() => {
+    const scopedCustomers = new Set(scopedHistoryRows.map((r) => r.customerId || r.customerName).filter(Boolean)).size;
+    const scopedItems = new Set(scopedHistoryRows.map((r) => r.stockName).filter(Boolean)).size;
+    const pastSales = scopedHistoryRows.reduce((sum, row) => sum + Number(row?.quantity || 0), 0);
+    const scopedRevenue = scopedHistoryRows.reduce((sum, row) => sum + Number(row?.totalAmount || 0), 0);
+    const futureSales = scopedForecastRows.reduce((sum, row) => sum + Number(row?.predicted || 0), 0);
+    const historicalRevenueBaseline = historySummary.totalAmount > 0
+      ? historySummary.totalAmount
+      : globalHistorySummary.totalAmount;
+    const revenue = forecastMode === 'future'
+      ? historicalRevenueBaseline
+      : scopedRevenue;
+
+    return {
+      customers: scopedCustomers > 0 ? scopedCustomers : customerCountForCards,
+      items: scopedItems > 0 ? scopedItems : stockCountForCards,
+      orders: scopedHistoryRows.length,
+      sales: forecastMode === 'past' ? pastSales : (forecastMode === 'future' ? futureSales : (pastSales + futureSales)),
+      revenue,
+      aiPredicted: futureSales,
+      forecastPoints: scopedForecastRows.length,
+      historicalRevenueBaseline,
+    };
+  }, [
+    scopedHistoryRows,
+    scopedForecastRows,
+    forecastMode,
+    customerCountForCards,
+    stockCountForCards,
+    historySummary.totalAmount,
+    globalHistorySummary.totalAmount,
+  ]);
 
   const selectionLabel = useMemo(() => {
     if (timeGranularity === 'day') return selectedDay;
@@ -1994,6 +2084,50 @@ const ForecastViewer = () => {
     if (!Number.isFinite(numeric)) return '0';
     return new Intl.NumberFormat('en-US').format(Math.round(numeric));
   };
+
+  const summaryMetricCards = useMemo(() => ([
+    {
+      label: 'Customers',
+      value: scopedSelectionMetrics.customers,
+      hint: `Across ${scopedSelectionMetrics.items} items`,
+      icon: Users,
+      tone: 'from-sky-500 to-blue-600',
+    },
+    {
+      label: 'Total Sales',
+      value: formatUnits(scopedSelectionMetrics.sales),
+      hint: forecastMode === 'future'
+        ? `${scopedSelectionMetrics.forecastPoints} forecast points`
+        : `From ${scopedSelectionMetrics.orders} orders`,
+      icon: Box,
+      tone: 'from-violet-500 to-purple-600',
+    },
+    {
+      label: 'Revenue',
+      value: formatCompactCurrency(scopedSelectionMetrics.revenue),
+      hint: forecastMode === 'future'
+        ? 'Historical billed value baseline'
+        : 'Selected window billed value',
+      icon: CircleDollarSign,
+      tone: 'from-emerald-500 to-teal-600',
+    },
+    {
+      label: 'Current Stock',
+      value: formatUnits(currentStockTotal),
+      hint: 'Units in hand',
+      icon: ShieldCheck,
+      tone: 'from-blue-600 to-indigo-700',
+    },
+    {
+      label: 'AI Predicted',
+      value: formatUnits(scopedSelectionMetrics.aiPredicted),
+      hint: forecastMode === 'future'
+        ? 'Total predicted units'
+        : 'Forecast in selected window',
+      icon: TrendingUp,
+      tone: 'from-emerald-600 to-teal-700',
+    },
+  ]), [scopedSelectionMetrics, forecastMode, currentStockTotal]);
 
 
 
@@ -2252,43 +2386,7 @@ const ForecastViewer = () => {
           </div>
 
           <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-5">
-            {[
-              {
-                label: 'Customers',
-                value: scopedSelectionMetrics.customers,
-                hint: `Across ${scopedSelectionMetrics.items} items`,
-                icon: Users,
-                tone: 'from-sky-500 to-blue-600',
-              },
-              {
-                label: 'Total Sales',
-                value: formatUnits(scopedSelectionMetrics.sales),
-                hint: `From ${scopedSelectionMetrics.orders} orders`,
-                icon: Box,
-                tone: 'from-violet-500 to-purple-600',
-              },
-              {
-                label: 'Revenue',
-                value: formatCompactCurrency(scopedSelectionMetrics.revenue),
-                hint: `${forecastMode === 'future' ? 'Past billed value' : 'Selected window value'}`,
-                icon: CircleDollarSign,
-                tone: 'from-emerald-500 to-teal-600',
-              },
-              {
-                label: 'Current Stock',
-                value: formatUnits(currentStockTotal),
-                hint: 'Units in hand',
-                icon: ShieldCheck,
-                tone: 'from-blue-600 to-indigo-700',
-              },
-              {
-                label: 'AI Predicted',
-                value: formatUnits(scopedSelectionMetrics.aiPredicted),
-                hint: 'Selection-based estimate',
-                icon: TrendingUp,
-                tone: 'from-emerald-600 to-teal-700',
-              },
-            ].map((card) => {
+            {summaryMetricCards.map((card) => {
               const Icon = card.icon;
               return (
                 <motion.div
@@ -2426,26 +2524,64 @@ const ForecastViewer = () => {
             </div>
           </div>
           
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <div className="grid grid-cols-1 gap-6">
             
 
             {/* Customer Horizontal Bar Chart */}
-            <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm hover:shadow-md transition-shadow">
-              <div className="flex items-center gap-3 mb-4">
-                <div className="w-10 h-10 rounded-xl bg-sky-500/10 text-sky-600 flex items-center justify-center">
-                  <Users size={18} />
+            <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm transition-shadow hover:shadow-md min-h-[420px]">
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-sky-500/10 text-sky-600">
+                    <Users size={18} />
+                  </div>
+                  <div>
+                    <h5 className="text-sm font-bold text-slate-900">Revenue by Customer</h5>
+                    <p className="text-[11px] font-medium text-slate-500">
+                      {customerLeaderboardView === 'top5'
+                        ? 'Top 5 clients'
+                        : customerLeaderboardView === 'top20'
+                          ? 'Top 20 clients'
+                          : `All ${topCustomerLeaderboard.length} clients`}
+                    </p>
+                  </div>
                 </div>
-                <div>
-                  <h5 className="text-sm font-bold text-slate-900">Revenue by Customer</h5>
-                  <p className="text-[11px] text-slate-500 font-medium">Top 5 clients</p>
+
+                <div className="inline-flex items-center rounded-2xl border border-slate-200 bg-slate-50 p-1 shadow-sm">
+                  {[
+                    { key: 'top5', label: 'Top 5' },
+                    { key: 'top20', label: 'Top 20' },
+                    { key: 'all', label: 'All' },
+                  ].map((option) => (
+                    <button
+                      key={option.key}
+                      type="button"
+                      onClick={() => setCustomerLeaderboardView(option.key)}
+                      className={`rounded-xl px-3 py-2 text-[11px] font-bold transition-all ${
+                        customerLeaderboardView === option.key
+                          ? 'bg-slate-900 text-white shadow-sm'
+                          : 'text-slate-600 hover:bg-white'
+                      }`}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
                 </div>
               </div>
               
-              {forecastViewMode === 'chart' ? (
-                <div className="h-[250px]">
-                  <ResponsiveContainer width="100%" height="100%">
+              {topCustomerLeaderboard.length === 0 ? (
+                <div className="flex min-h-[320px] items-center justify-center rounded-3xl border border-dashed border-slate-200 bg-slate-50/70 px-6 text-center">
+                  <div>
+                    <p className="text-sm font-bold text-slate-800">Customer revenue data not available</p>
+                    <p className="mt-1 text-xs font-medium text-slate-500">
+                      Customer-wise billed history milte hi yahan ranked breakdown automatically dikhega.
+                    </p>
+                  </div>
+                </div>
+              ) : forecastViewMode === 'chart' ? (
+                <div className="h-[320px] min-h-[320px]">
+                  <ResponsiveContainer width="100%" height="100%" minWidth={320} minHeight={320}>
                     <BarChart
-                      data={topHistoryCustomers}
+                      data={visibleHistoryCustomers}
                       layout="vertical"
                       margin={{ top: 10, right: 30, left: 0, bottom: 0 }}
                     >
@@ -2512,7 +2648,7 @@ const ForecastViewer = () => {
                   </ResponsiveContainer>
                 </div>
               ) : (
-                <div className="h-[250px] overflow-y-auto custom-scrollbar pr-2">
+                <div className="h-[320px] min-h-[320px] overflow-y-auto custom-scrollbar pr-2">
                   <table className="w-full border-separate border-spacing-0">
                     <thead className="bg-slate-50/80 sticky top-0 z-10">
                       <tr>
@@ -2522,7 +2658,7 @@ const ForecastViewer = () => {
                       </tr>
                     </thead>
                     <tbody>
-                      {topHistoryCustomers.slice(0, 5).map((cust, idx) => (
+                      {visibleHistoryCustomers.map((cust, idx) => (
                         <tr key={idx} className="hover:bg-sky-50/30 transition-colors group">
                           <td className="px-4 py-3 border-b border-slate-50">
                             <div className="flex items-center gap-3">
